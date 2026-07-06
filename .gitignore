@@ -1,0 +1,5 @@
+# Runtime / install artifacts — Pulse itself has no build step and no deps.
+pulse.log
+node_modules/
+npm-debug.log*
+.DS_Store

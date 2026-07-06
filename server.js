@@ -847,7 +847,9 @@ function readIndexHtml() {
   return fs.readFileSync(path.join(__dirname, 'index.html'));
 }
 
-function startServer(port) {
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
+
+function startServer(port, host) {
   const server = http.createServer((req, res) => {
     const parsed = url.parse(req.url);
     const route = parsed.pathname;
@@ -889,11 +891,21 @@ function startServer(port) {
     throw err;
   });
 
-  // Local-only: bind to loopback (§2).
-  server.listen(port, '127.0.0.1', () => {
+  // Local-only by default: bind to loopback (§2). A non-loopback host is an
+  // explicit opt-in (--host / HOST) for VPS/LAN use and is warned about.
+  server.listen(port, host, () => {
     console.log(`\n  Pulse — Claude Code usage dashboard`);
     console.log(`  reading (read-only): ${claudeDir()}`);
-    console.log(`  open: http://localhost:${port}\n`);
+    console.log(`  listening: http://${host}:${port}`);
+    if (LOOPBACK_HOSTS.has(host)) {
+      console.log(`  open: http://localhost:${port}\n`);
+    } else {
+      console.log('');
+      console.log(`  ⚠  Bound to ${host} — reachable from the network.`);
+      console.log('     The dashboard exposes usage metadata (project paths, session');
+      console.log('     titles, costs). Prefer 127.0.0.1 + an SSH tunnel, or put a');
+      console.log('     firewall / authenticating reverse proxy in front of it.\n');
+    }
   });
   return server;
 }
@@ -903,11 +915,13 @@ function startServer(port) {
 // ---------------------------------------------------------------------------
 
 function parseArgs(argv) {
-  const out = { port: null, inspectSchema: false };
+  const out = { port: null, host: null, inspectSchema: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--port' || a === '-p') { out.port = parseInt(argv[++i], 10); }
     else if (a.startsWith('--port=')) { out.port = parseInt(a.slice(7), 10); }
+    else if (a === '--host') { out.host = argv[++i]; }
+    else if (a.startsWith('--host=')) { out.host = a.slice(7); }
     else if (a === '--inspect-schema') { out.inspectSchema = true; }
     else if (a === '--help' || a === '-h') { out.help = true; }
   }
@@ -918,6 +932,10 @@ function resolvePort(args) {
   if (args.port && !isNaN(args.port)) return args.port;
   if (process.env.PORT && !isNaN(parseInt(process.env.PORT, 10))) return parseInt(process.env.PORT, 10);
   return 4747;
+}
+
+function resolveHost(args) {
+  return args.host || process.env.HOST || '127.0.0.1';
 }
 
 // Phase 0 helper: print the observed top-level keys and usage keys from a
@@ -969,14 +987,17 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     console.log('Pulse — local Claude Code usage dashboard\n');
-    console.log('Usage: node server.js [--port N] [--inspect-schema]');
+    console.log('Usage: node server.js [--port N] [--host H] [--inspect-schema]');
     console.log('  --port N          listen port (default 4747, or $PORT)');
+    console.log('  --host H          bind address (default 127.0.0.1, or $HOST).');
+    console.log('                    Use 0.0.0.0 to expose on the network — see the');
+    console.log('                    warning it prints; prefer an SSH tunnel instead.');
     console.log('  --inspect-schema  print observed record schema and exit');
     console.log('  env CLAUDE_DIR    override ~/.claude location');
     return;
   }
   if (args.inspectSchema) { inspectSchema(); return; }
-  startServer(resolvePort(args));
+  startServer(resolvePort(args), resolveHost(args));
 }
 
 if (require.main === module) main();

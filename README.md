@@ -52,6 +52,7 @@ in a tab while you work.
 | Flag / env         | Effect                                                        |
 | ------------------ | ------------------------------------------------------------- |
 | `--port N` / `PORT`| Listen port (default `4747`). Use if the port is taken.       |
+| `--host H` / `HOST`| Bind address (default `127.0.0.1`). `0.0.0.0` exposes it on the network — see the warning it prints; prefer an SSH tunnel. |
 | `--inspect-schema` | Print the record schema observed in your logs, then exit.     |
 | `CLAUDE_DIR`       | Override the `~/.claude` location for non-standard installs.  |
 | `--help`           | Usage.                                                        |
@@ -60,6 +61,48 @@ in a tab while you work.
 node server.js --port 5000
 CLAUDE_DIR=/mnt/claude node server.js
 ```
+
+## Deploy on an Ubuntu VPS (one command)
+
+If you run Claude Code on a headless VPS, install Pulse as a background service
+with a single command:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/refxfrank/claudeusage/claude/pulse-usage-dashboard-g0xxtk/install.sh | bash
+```
+
+(or clone the repo and run `./install.sh`). The installer:
+
+1. Fetches Pulse and ensures Node ≥ 18 (installs Node 20 LTS via NodeSource if needed).
+2. Installs a **systemd service** that runs as the user whose `~/.claude` holds
+   your usage, restarts on failure, and starts on boot. (No systemd? It falls
+   back to a `systemctl --user` service, then to `nohup`.)
+3. Binds to `127.0.0.1` and prints how to reach it.
+
+**Reaching it securely.** Pulse binds to localhost on the VPS by default — it is
+*not* exposed to the internet, because the dashboard reveals usage metadata
+(project paths, session titles, cost estimates). Open an SSH tunnel from your own
+machine:
+
+```sh
+ssh -N -L 4747:localhost:4747 <you>@<your-vps-ip>
+# then open http://localhost:4747 in your browser
+```
+
+**Managing the service:**
+
+```sh
+sudo systemctl status pulse      # or: systemctl --user status pulse
+sudo systemctl restart pulse
+journalctl -u pulse -f           # live logs
+```
+
+**Overrides** (env vars before the command): `PULSE_PORT`, `PULSE_HOST`,
+`PULSE_DIR`, `PULSE_BRANCH`, `CLAUDE_DIR`. To expose Pulse directly instead of
+tunnelling (not recommended — put a firewall or authenticating reverse proxy in
+front), install with `PULSE_HOST=0.0.0.0`.
+
+Re-running the installer updates to the latest version and restarts the service.
 
 ## How it works
 
@@ -106,6 +149,7 @@ you will be charged. Verify current list prices at
 | `server.js`   | Zero-dependency backend: parsing, mtime cache, aggregation, HTTP.      |
 | `index.html`  | Self-contained dashboard — HTML + inline CSS + vanilla JS + SVG charts.|
 | `pulse.sh`    | POSIX launcher (`pulse.cmd` for Windows).                              |
+| `install.sh`  | One-command Ubuntu/systemd VPS installer (service + boot + tunnel help).|
 | `package.json`| Metadata + `npm start`. Declares **no** dependencies.                  |
 
 ## API
