@@ -145,18 +145,27 @@ Re-running the installer updates to the latest version and restarts the service.
 ## Reasoning-effort logging (optional)
 
 Claude Code never writes the reasoning effort level (`low`→`max`, ultracode) to
-its transcripts — but it does hand it to hooks. Pulse ships an optional hook
-that records it so the dashboard can show effort chips per model and session:
+its transcripts, and does not put it in the hook payload either — but it *does*
+persist the level you pick with `/effort` to `settings.json`. Pulse ships an
+optional hook that reads that level so the dashboard can show effort chips per
+model and session — for **every** model, Fable included:
 
 ```sh
 node server.js --effort-setup     # or: pulse.exe --effort-setup
 ```
 
 That prints a `hooks` snippet to paste into `~/.claude/settings.json` (Pulse
-never edits `~/.claude` itself). Once added, new sessions log their effort level
-to `~/.pulse/modes.jsonl` and the dashboard picks it up automatically. The hook
-is silent, always exits 0, and appends only when the level changes. Ultracode
-sessions are additionally detected from prompt text, which works even for
+never edits `~/.claude` itself). Once added, sessions log their effort level to
+`~/.pulse/modes.jsonl` and the dashboard picks it up automatically. The hook is
+silent, always exits 0, and appends only when the level changes. It reads the
+effort from `settings.json` (`effortLevel`), falling back to the hook payload /
+`CLAUDE_CODE_EFFORT_LEVEL` env if a future Claude Code version exposes it there.
+
+**One caveat:** `/effort` only stores a level when it *differs* from the model's
+default (the default — `high` for the current top models — is stored as absent).
+So a session left at the default has no explicit level to record and shows no
+effort chip. Pick a non-default level, or type `ultracode`, and it appears.
+Ultracode is additionally detected from prompt text, which works even for
 history recorded before the hook was installed.
 
 ## What Pulse can and can't see

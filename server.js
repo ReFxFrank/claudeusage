@@ -58,10 +58,17 @@ const PRICING = {
   'claude-3-opus':     { input: 15, output: 75 },
   'claude-3-haiku':    { input: 0.25, output: 1.25 },
 
+  // Claude Code's placeholder for non-billable internal turns — free, and not
+  // a real model. Priced at zero and hidden from the by-model breakdown.
+  '<synthetic>':       { input: 0, output: 0 },
+
   // Fallback for unknown / new model strings. The string is logged once so it
   // can be added to this map.
   '__default__':       { input: 3, output: 15 },
 };
+
+// Models excluded from the by-model list (internal placeholders, no real cost).
+const HIDDEN_MODELS = new Set(['<synthetic>']);
 
 // Cache-token multipliers, applied against the model's INPUT price.
 const CACHE_WRITE_5M_MULT = 1.25; // 5-minute TTL cache write
@@ -275,9 +282,10 @@ function normalize(rec) {
     model: msg.model || 'unknown',
     source: rec.entrypoint || 'cli', // §3.4 — default cli when absent
     // Execution mode as recorded by Claude Code. NOTE: reasoning effort
-    // (high/xhigh/max) and "ultracode" are request-time settings that are NOT
-    // written to the transcript, so they cannot be shown. `speed` (fast vs
-    // standard) and `service_tier` are the only runtime modes that ARE logged.
+    // (high/xhigh/max) and "ultracode" are request-time settings NOT written to
+    // the transcript — they are recovered separately from the effort sidecar
+    // (see --effort-setup) and joined on in annotateModes(). `speed` (fast vs
+    // standard) and `service_tier` are the only runtime modes logged here.
     speed: u.speed || 'standard',
     serviceTier: u.service_tier || 'standard',
     inputTokens: num(u.input_tokens),
@@ -638,7 +646,7 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
   const allSourcesSet = new Set(), allModelsSet = new Set(), monthKeySet = new Set();
   for (const e of asc) {
     allSourcesSet.add(e.source);
-    allModelsSet.add(e.model);
+    if (!HIDDEN_MODELS.has(e.model)) allModelsSet.add(e.model);
     monthKeySet.add(localDateStr(e.ts).slice(0, 7)); // YYYY-MM
   }
   const allSources = Array.from(allSourcesSet).sort();
@@ -679,7 +687,8 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
       };
     }
     s.cost += e.cost; s.tokens += tokensOf(e); s.messages++;
-    s.models.add(e.model); s.sources.add(e.source); s.speeds.add(e.speed);
+    if (!HIDDEN_MODELS.has(e.model)) s.models.add(e.model);
+    s.sources.add(e.source); s.speeds.add(e.speed);
     if (e.effort) s.efforts.add(e.effort);
     if (e.ultracode) s.ultracode = true;
     if (e.ts > s.lastTs) s.lastTs = e.ts;
@@ -752,12 +761,16 @@ function buildPeriod(key, label, entries, dayList, allSources) {
       b.bySource[e.source] = (b.bySource[e.source] || 0) + e.cost;
     }
     cost += e.cost; tokens += tk; srcSet.add(e.source);
-    const m = byModel[e.model] || (byModel[e.model] = { cost: 0, tokens: 0, messages: 0, speeds: {}, tiers: {} });
-    m.cost += e.cost; m.tokens += tk; m.messages++;
-    m.speeds[e.speed] = (m.speeds[e.speed] || 0) + 1;
-    m.tiers[e.serviceTier] = (m.tiers[e.serviceTier] || 0) + 1;
-    if (e.effort) m.efforts = m.efforts || {}, m.efforts[e.effort] = (m.efforts[e.effort] || 0) + 1;
-    if (e.ultracode) m.ultracode = (m.ultracode || 0) + 1;
+    // Hidden placeholders (e.g. "<synthetic>") still count toward totals — they
+    // are $0 / 0-token — but never appear as a row in the by-model breakdown.
+    if (!HIDDEN_MODELS.has(e.model)) {
+      const m = byModel[e.model] || (byModel[e.model] = { cost: 0, tokens: 0, messages: 0, speeds: {}, tiers: {} });
+      m.cost += e.cost; m.tokens += tk; m.messages++;
+      m.speeds[e.speed] = (m.speeds[e.speed] || 0) + 1;
+      m.tiers[e.serviceTier] = (m.tiers[e.serviceTier] || 0) + 1;
+      if (e.effort) m.efforts = m.efforts || {}, m.efforts[e.effort] = (m.efforts[e.effort] || 0) + 1;
+      if (e.ultracode) m.ultracode = (m.ultracode || 0) + 1;
+    }
     const s = bySource[e.source] || (bySource[e.source] = { cost: 0, tokens: 0, messages: 0, speeds: {}, tiers: {} });
     s.cost += e.cost; s.tokens += tk; s.messages++;
     s.speeds[e.speed] = (s.speeds[e.speed] || 0) + 1;
@@ -804,7 +817,7 @@ function monthLabel(year, month /* 1-based */) {
 function buildPricingView(now) {
   const out = {};
   for (const model of Object.keys(PRICING)) {
-    if (model === '__default__') continue;
+    if (model === '__default__' || HIDDEN_MODELS.has(model)) continue;
     const p = priceFor(model, now);
     out[model] = { input: p.input, output: p.output };
   }
@@ -1123,13 +1136,39 @@ function startServer(port, host, opts) {
 // ---------------------------------------------------------------------------
 // EFFORT / MODE HOOK  (`--mode-hook`)
 //
-// Claude Code delivers the live reasoning effort level to hooks (stdin JSON
-// `effort: {level}`) but never writes it to transcripts. Registered as a
-// SessionStart + UserPromptSubmit hook (see --effort-setup), this subcommand
-// appends effort changes to the sidecar log that readModes() joins in.
+// Claude Code does NOT write the reasoning effort level to transcripts, and
+// (verified against the installed CLI) does not currently put it in the hook
+// payload either. It DOES persist the level chosen with /effort to settings.json
+// as `effortLevel`. Registered as a SessionStart + UserPromptSubmit hook (see
+// --effort-setup), this subcommand reads that level (plus any payload/env source)
+// and appends changes to the sidecar log that readModes() joins in. Reading
+// settings.json is model-independent, so it captures effort for Fable too.
 // It must never disturb a session: always exits 0, prints nothing, swallows
-// every error. Writes ONLY to ~/.pulse — never under ~/.claude.
+// every error. Writes ONLY to ~/.pulse — reads ~/.claude but never writes there.
 // ---------------------------------------------------------------------------
+
+// Read the configured reasoning effort (`effortLevel`) from Claude Code's
+// settings, honoring project-local overrides over the user-level file. Purely
+// read-only. Returns a level string (e.g. "max") or null if none is set —
+// which is also the case when the level equals the model default (the /effort
+// picker stores the default as absent).
+function readConfiguredEffort(cwd) {
+  const files = [];
+  if (cwd && typeof cwd === 'string') {
+    files.push(path.join(cwd, '.claude', 'settings.local.json'));
+    files.push(path.join(cwd, '.claude', 'settings.json'));
+  }
+  files.push(path.join(claudeDir(), 'settings.json'));
+  for (const f of files) {
+    let j;
+    try { j = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) { continue; }
+    const v = j && j.effortLevel;
+    if (typeof v === 'string' && v.trim()) return v.trim();
+    if (typeof v === 'number' && isFinite(v)) return String(v);
+  }
+  return null;
+}
+
 function runModeHook() {
   try {
     let raw = '';
@@ -1140,13 +1179,24 @@ function runModeHook() {
     const sessionId = p.session_id || '';
     if (!sessionId) return;
 
-    // Structured hook field first; env fallbacks. Recorded verbatim so any
-    // future level name is preserved.
+    // Where the effort level comes from, in priority order:
+    //   1. p.effort.level / p.effort — the hook payload field. NOTE: current
+    //      Claude Code (verified against 2.1.x) does NOT put effort in the hook
+    //      payload; this is future-proofing for versions/docs that do.
+    //   2. CLAUDE_CODE_EFFORT_LEVEL / CLAUDE_EFFORT — env, if the CLI exports it.
+    //   3. settings.json `effortLevel` — the value the /effort picker persists.
+    //      This is the reliable source TODAY and is model-independent, so it is
+    //      what makes Fable (and every other model) show real effort. Caveat:
+    //      the picker only writes effortLevel when it differs from the model's
+    //      default (default "high" is stored as absent), so a session left at
+    //      the default has no explicit level to record.
+    // Recorded verbatim so any future level name is preserved.
     let effort = null;
     if (p.effort && typeof p.effort === 'object' && p.effort.level) effort = String(p.effort.level);
     else if (typeof p.effort === 'string') effort = p.effort;
-    else if (process.env.CLAUDE_EFFORT) effort = String(process.env.CLAUDE_EFFORT);
     else if (process.env.CLAUDE_CODE_EFFORT_LEVEL) effort = String(process.env.CLAUDE_CODE_EFFORT_LEVEL);
+    else if (process.env.CLAUDE_EFFORT) effort = String(process.env.CLAUDE_EFFORT);
+    else effort = readConfiguredEffort(p.cwd);
 
     const prompt = typeof p.prompt === 'string' ? p.prompt : '';
     const ultracode = /\bultracode\b/i.test(prompt) || /^ultracode$/i.test(effort || '');
@@ -1191,9 +1241,10 @@ function effortSetup() {
   const settingsPath = path.join(claudeDir(), 'settings.json');
   console.log('\nPulse — effort logging setup');
   console.log('─'.repeat(64));
-  console.log('Claude Code sends the reasoning effort level (high/xhigh/max,');
-  console.log('ultracode) to hooks but never writes it to transcripts. Add the');
-  console.log('hooks below and Pulse will record + display effort per session.');
+  console.log('Claude Code never writes the reasoning effort level to its');
+  console.log('transcripts, but it does persist it (via /effort) to settings.json.');
+  console.log('Add the hooks below and Pulse records that level per session — for');
+  console.log('every model, Fable included — plus any "ultracode" you type.');
   console.log('');
   console.log(`1. Open:  ${settingsPath}`);
   console.log('   (create it if missing; if a "hooks" section exists, merge the');
@@ -1206,6 +1257,11 @@ function effortSetup() {
   console.log(`   effort level to ${modesFilePath()}`);
   console.log('   and Pulse picks it up automatically (nothing is ever written');
   console.log('   under ~/.claude by Pulse).');
+  console.log('');
+  console.log('Note: /effort only stores a level when it differs from the model');
+  console.log('default, so a session left at the default has no explicit level to');
+  console.log('record and shows no effort chip. Pick a non-default level (or type');
+  console.log('"ultracode") and it appears.');
   console.log('');
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "pulse-usage-dashboard",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "A local Claude Code usage dashboard. The server reads ~/.claude read-only and has zero runtime dependencies; the React frontend (web/) is built to static files it serves. Runs on http://localhost:4747.",
   "license": "MIT",
   "engines": {
