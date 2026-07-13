@@ -39,9 +39,17 @@ install:
 - **Linux:** `chmod +x pulse-linux && ./pulse-linux`
 
 Everything you'd use a console for lives in the dashboard's **Server panel**:
-live server logs, a **Stop** button, version/uptime, and one-click **updates**.
-Double-clicking a newer `pulse.exe` while an old one runs stops the old one and
-takes over automatically (v1.1.0+). Prefer a console? `pulse.exe --no-daemon`.
+live server logs, a **Stop** button (also in the header), version/uptime, and
+one-click **updates**. Double-clicking a newer `pulse.exe` while an old one
+runs stops the old one and takes over automatically (v1.1.0+). Prefer a
+console? `pulse.exe --no-daemon`.
+
+**Start / stop:** starting is the exe itself — double-clicking is idempotent
+(already running → it just opens the dashboard). Run
+`pulse.exe --install-shortcuts` once to put a **"Pulse"** start button and a
+**"Pulse — Stop"** button on your Desktop; `pulse.exe --stop` does the same
+from a terminal or script. (A stopped server can't render a start button —
+that's why start lives on the Desktop and stop lives in the dashboard.)
 
 **Updating:** Pulse checks GitHub for a newer release (the only network call it
 ever makes — just the version number, no usage data; disable with
@@ -80,6 +88,8 @@ in a tab while you work.
 | ------------------ | ------------------------------------------------------------- |
 | `--port N` / `PORT`| Listen port (default `4747`). Use if the port is taken.       |
 | `--host H` / `HOST`| Bind address (default `127.0.0.1`). `0.0.0.0` exposes it on the network — see the warning it prints; prefer an SSH tunnel. |
+| `--stop`           | Stop the running Pulse instance and exit.                     |
+| `--install-shortcuts` | (Windows) add **"Pulse"** (start / open) and **"Pulse — Stop"** shortcuts to the Desktop. |
 | `--no-daemon`      | (Windows exe) stay in the console window instead of backgrounding. |
 | `--no-update-check`| Disable the GitHub version check — Pulse then makes zero network calls. Also: `PULSE_NO_UPDATE_CHECK=1`, or `{"updateCheck": false}` in `~/.pulse/config.json`. |
 | `--no-open`        | Don't auto-open the browser (packaged exe).                   |

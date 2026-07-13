@@ -2,16 +2,46 @@ import { useEffect, useRef, useState } from 'react';
 import { Card } from './panels.jsx';
 import { postJson, useLogs, dur, clockTime, hm } from './lib.js';
 
+// Small confirm-then-stop button, shared by the header and the Server panel.
+// A dashboard can only ever offer STOP — a stopped server serves no page to
+// put a start button on; starting is the exe (or its Desktop shortcut).
+export function StopButton({ onStopped, compact = false, disabled = false }) {
+  const [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  async function click() {
+    if (!confirm) {
+      setConfirm(true);
+      setTimeout(() => setConfirm(false), 4000);
+      return;
+    }
+    setBusy(true); setErr(null);
+    try {
+      await postJson('/api/shutdown');
+      onStopped && onStopped();
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  }
+  return (
+    <button
+      className={'btn danger' + (compact ? ' compact' : '')}
+      onClick={click}
+      disabled={disabled || busy}
+      title={err ? 'Stop failed: ' + err : 'Stop the Pulse server'}
+    >
+      {busy ? 'Stopping…' : confirm ? (compact ? 'Confirm?' : 'Click again to confirm') : (compact ? '⏻ Stop' : 'Stop server')}
+    </button>
+  );
+}
+
 // The Server card: identity (version / uptime / mode), update check + install,
 // stop button, and a live tail of the server log — everything you would
 // otherwise need the console window for.
-export function ServerPanel({ data, delay = 0.36 }) {
-  const [busy, setBusy] = useState(null); // 'check' | 'install' | 'stop'
+export function ServerPanel({ data, onStopped, delay = 0.36 }) {
+  const [busy, setBusy] = useState(null); // 'check' | 'install'
   const [note, setNote] = useState(null);
-  const [confirmStop, setConfirmStop] = useState(false);
-  const [stopped, setStopped] = useState(false);
   const [showLogs, setShowLogs] = useState(true);
-  const lines = useLogs(!stopped);
+  const lines = useLogs(true);
   const boxRef = useRef(null);
   const stick = useRef(true); // auto-follow unless the user scrolled up
 
@@ -86,32 +116,6 @@ export function ServerPanel({ data, delay = 0.36 }) {
     }
   }
 
-  async function onStop() {
-    if (!confirmStop) {
-      setConfirmStop(true);
-      setTimeout(() => setConfirmStop(false), 4000);
-      return;
-    }
-    setBusy('stop');
-    try {
-      await postJson('/api/shutdown');
-      setStopped(true);
-    } catch (e) { setNote('Stop failed: ' + e.message); }
-    setBusy(null);
-  }
-
-  if (stopped) {
-    return (
-      <Card delay={delay} hover={false} id="server">
-        <h2>Server</h2>
-        <div className="srvstopped">
-          <b>Pulse is stopped.</b> Run <code>pulse.exe</code> (or <code>node server.js</code>) to
-          start it again — this page can’t restart a stopped server.
-        </div>
-      </Card>
-    );
-  }
-
   const uptime = data.generatedAt && data.serverStartTs ? dur(data.generatedAt - data.serverStartTs) : '—';
 
   return (
@@ -139,12 +143,14 @@ export function ServerPanel({ data, delay = 0.36 }) {
               Get v{upd.latest}
             </a>
           ))}
-        <button className={'btn danger'} onClick={onStop} disabled={busy === 'install'}>
-          {confirmStop ? 'Click again to confirm' : 'Stop server'}
-        </button>
+        <StopButton onStopped={onStopped} disabled={busy === 'install'} />
         <button className="btn ghost" onClick={() => setShowLogs((s) => !s)}>
           {showLogs ? 'Hide logs' : 'Show logs'}
         </button>
+      </div>
+      <div className="sub" style={{ margin: '-4px 0 12px' }}>
+        Starting again is the exe: double-click <code>pulse.exe</code>, or run{' '}
+        <code>pulse.exe --install-shortcuts</code> once for “Pulse” / “Pulse — Stop” Desktop buttons.
       </div>
 
       {note && <div className="srvnote">{note}</div>}

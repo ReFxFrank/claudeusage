@@ -24,7 +24,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.1.0';
+const PULSE_VERSION = '1.1.1';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -1787,8 +1787,81 @@ function spawnDaemon(args, port, host) {
   console.log(`\n  Pulse v${PULSE_VERSION} is starting in the background.`);
   console.log(`  Dashboard: http://localhost:${port}  (opens automatically)`);
   console.log(`  Logs, updates and Stop live in the dashboard's Server panel.`);
+  console.log('  Tip: pulse.exe --install-shortcuts adds Start/Stop buttons to your Desktop.');
   console.log('  (Run with --no-daemon to keep it in a console window.)');
   setTimeout(() => process.exit(0), 2500);
+}
+
+// ---------------------------------------------------------------------------
+// START / STOP CONVENIENCES
+// `--stop` stops a running instance from anywhere (shortcut, script, console).
+// `--install-shortcuts` (Windows) drops "Pulse" (start / open dashboard —
+// starting is idempotent) and "Pulse - Stop" shortcuts on the Desktop: a real
+// start/stop button pair, since a stopped server cannot render one.
+// ---------------------------------------------------------------------------
+function stopRunning(port) {
+  // Double-clicked stop shortcut: keep the window up long enough to read.
+  const exitSoon = (code) => setTimeout(() => process.exit(code),
+    seaApi && process.platform === 'win32' && process.stdin.isTTY ? 1600 : 0);
+  probeInstance(port, (inst) => {
+    if (inst.kind === 'free') {
+      console.log(`[pulse] nothing is running on port ${port}.`);
+      return exitSoon(0);
+    }
+    if (inst.kind === 'other') {
+      console.log(`[pulse] port ${port} is in use by another program — nothing to stop.`);
+      return exitSoon(1);
+    }
+    requestShutdown(port, (ok) => {
+      if (!ok) {
+        console.error(`[pulse] the running Pulse (${inst.version ? 'v' + inst.version : 'pre-1.1.0'}) does not support remote stop.`);
+        console.error('[pulse] Close it via Task Manager → pulse.exe → End task.');
+        return exitSoon(1);
+      }
+      waitForPortFree(port, 8000, (free) => {
+        console.log(free
+          ? `[pulse] stopped Pulse ${inst.version ? 'v' + inst.version + ' ' : ''}on port ${port}.`
+          : '[pulse] stop acknowledged — the instance is taking a while to exit.');
+        exitSoon(free ? 0 : 1);
+      });
+    });
+  });
+}
+
+function installShortcuts() {
+  if (process.platform !== 'win32') {
+    console.log('[pulse] Desktop shortcuts are Windows-only.');
+    console.log('[pulse] Start: run the binary (idempotent). Stop: --stop.');
+    return;
+  }
+  if (!seaApi) {
+    console.log('[pulse] run this from the packaged pulse.exe so shortcuts point at it.');
+    return;
+  }
+  const exe = process.execPath.replace(/'/g, "''"); // PS single-quote escape
+  const ps = [
+    "$W = New-Object -ComObject WScript.Shell;",
+    "$d = [Environment]::GetFolderPath('Desktop');",
+    "$s = $W.CreateShortcut((Join-Path $d 'Pulse.lnk'));",
+    `$s.TargetPath = '${exe}';`,
+    "$s.Description = 'Start Pulse (opens the dashboard if already running)';",
+    "$s.Save();",
+    "$t = $W.CreateShortcut((Join-Path $d 'Pulse - Stop.lnk'));",
+    `$t.TargetPath = '${exe}';`,
+    "$t.Arguments = '--stop';",
+    "$t.Description = 'Stop the running Pulse';",
+    "$t.Save();",
+  ].join(' ');
+  try {
+    require('child_process').execFileSync('powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', ps],
+      { stdio: 'ignore', windowsHide: true, timeout: 20000 });
+    console.log('[pulse] created Desktop shortcuts:');
+    console.log('  "Pulse"        — start (or open the dashboard if already running)');
+    console.log('  "Pulse - Stop" — stop the running Pulse');
+  } catch (e) {
+    console.error('[pulse] could not create shortcuts: ' + ((e && e.message) || e));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1952,6 +2025,8 @@ function parseArgs(argv) {
     else if (a === '--daemon-child') { out.daemonChild = true; }
     else if (a === '--after-update') { out.afterUpdate = true; }
     else if (a === '--no-update-check') { out.noUpdateCheck = true; }
+    else if (a === '--stop') { out.stop = true; }
+    else if (a === '--install-shortcuts') { out.installShortcuts = true; }
     else if (a === '--version' || a === '-v') { out.version = true; }
     else if (a === '--help' || a === '-h') { out.help = true; }
   }
@@ -2043,6 +2118,9 @@ function main() {
     console.log('  --mode-hook       (internal) run as a Claude Code hook — records the');
     console.log('                    effort level to ' + modesFilePath());
     console.log('  --no-open         do not auto-open the browser (packaged exe only)');
+    console.log('  --stop            stop the running Pulse instance and exit');
+    console.log('  --install-shortcuts  (Windows) add "Pulse" and "Pulse - Stop"');
+    console.log('                    shortcuts to the Desktop');
     console.log('  --no-daemon       (Windows exe) keep running in this console window');
     console.log('                    instead of backgrounding');
     console.log('  --no-update-check disable the GitHub version check (the only network');
@@ -2057,8 +2135,10 @@ function main() {
   if (args.modeHook) { runModeHook(); return; }
   if (args.effortSetup) { effortSetup(); return; }
   if (args.inspectSchema) { inspectSchema(); return; }
+  if (args.installShortcuts) { installShortcuts(); return; }
   const port = resolvePort(args);
   const host = resolveHost(args);
+  if (args.stop) { stopRunning(port); return; }
   if (args.daemonChild) IS_DAEMON_CHILD = true;
   // Detached processes (hidden daemon, post-update relaunch on any platform)
   // have no console — their output must land in ~/.pulse/pulse.log.

@@ -5,16 +5,34 @@ import { SpendChart, Sparkline } from './charts.jsx';
 import {
   Card, CurrentBlock, BurnRate, Rollup, BarList, SessionsTable, PeriodSelect, Legend, InfoTip,
 } from './panels.jsx';
-import { ServerPanel } from './server-panel.jsx';
+import { ServerPanel, StopButton } from './server-panel.jsx';
 
 export default function App() {
   const { data, error, loading } = useSummary();
   const [periodKey, setPeriodKey] = useState('last30');
+  const [stopped, setStopped] = useState(false);
 
   const colorMaps = useMemo(() => ({
     src: makeColorMap(data?.allSources),
     model: makeColorMap(data?.allModels),
   }), [data?.allSources, data?.allModels]);
+
+  if (stopped) {
+    return (
+      <Shell version={data?.version}>
+        <div className="center">
+          <div>
+            <h2>Pulse is stopped</h2>
+            <p>
+              This page can’t restart a stopped server. To start Pulse again, double-click{' '}
+              <code>pulse.exe</code> — or your <b>“Pulse”</b> Desktop shortcut
+              (create the shortcut pair once with <code>pulse.exe --install-shortcuts</code>).
+            </p>
+          </div>
+        </div>
+      </Shell>
+    );
+  }
 
   if (!data) {
     return (
@@ -42,9 +60,12 @@ export default function App() {
       version={data.version}
       header={
         <div className="hmeta">
-          {data.update?.status === 'available' && (
-            <a className="updpill" href="#server">v{data.update.latest} available ↓</a>
-          )}
+          <div className="hactions">
+            {data.update?.status === 'available' && (
+              <a className="updpill" href="#server">v{data.update.latest} available ↓</a>
+            )}
+            <StopButton compact onStopped={() => setStopped(true)} />
+          </div>
           <div>updated <b>{clockTime(data.generatedAt)}</b> · refreshes every 10s</div>
           <div>
             {latest
@@ -56,6 +77,11 @@ export default function App() {
       }
       footer={data}
     >
+      {error && (
+        <div className="warnbar">
+          ⚠ Server unreachable ({error}) — if you stopped it, double-click <code>pulse.exe</code> to start it again.
+        </div>
+      )}
       {!data.hasData ? (
         <>
           <div className="center">
@@ -65,16 +91,16 @@ export default function App() {
             </div>
           </div>
           {/* the background process must stay controllable even with no data */}
-          <ServerPanel data={data} delay={0.2} />
+          <ServerPanel data={data} onStopped={() => setStopped(true)} delay={0.2} />
         </>
       ) : (
-        <Dashboard data={data} colorMaps={colorMaps} periodKey={periodKey} setPeriodKey={setPeriodKey} />
+        <Dashboard data={data} colorMaps={colorMaps} periodKey={periodKey} setPeriodKey={setPeriodKey} onStopped={() => setStopped(true)} />
       )}
     </Shell>
   );
 }
 
-function Dashboard({ data, colorMaps, periodKey, setPeriodKey }) {
+function Dashboard({ data, colorMaps, periodKey, setPeriodKey, onStopped }) {
   const periods = data.periods || [];
   let period = periods.find((p) => p.key === periodKey);
   if (!period) period = periods[0];
@@ -164,7 +190,7 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey }) {
         <SessionsTable sessions={data.recentSessions} />
       </Card>
 
-      <ServerPanel data={data} delay={0.36} />
+      <ServerPanel data={data} onStopped={onStopped} delay={0.36} />
     </>
   );
 }
