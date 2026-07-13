@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.2.2
+
+- **Longer rolling windows:** the period dropdown now offers **Last 90 days**
+  and **Last 180 days** alongside Last 30 — the whole spend section (chart,
+  totals, by-model, by-source) re-scopes to the longer window. Chart axis
+  labels and bar spacing adapt to the density. Reminder: Claude Code prunes
+  transcripts after ~30 days by default — raise `cleanupPeriodDays` to keep
+  long windows fully populated.
+
 ## v1.2.1
 
 - **Source filter:** chips above the dashboard scope EVERYTHING (spend, models,

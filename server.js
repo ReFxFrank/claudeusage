@@ -24,7 +24,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.2.1';
+const PULSE_VERSION = '1.2.2';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -1034,18 +1034,24 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
   const allSources = Array.from(allSourcesSet).sort();
   const allModels = Array.from(allModelsSet).sort();
 
-  // ---- §4.3 spend PERIODS: "Last 30 days" + one entry per calendar month ----
+  // ---- §4.3 spend PERIODS: rolling windows + one entry per calendar month ----
   // Each period carries its own daily buckets (split by source), by-model and
   // by-source rollups, and totals — so the spend section can be re-scoped to a
   // rolling window or any past month. Day walks use setDate (DST-safe).
+  // Note: Claude Code prunes transcripts after ~cleanupPeriodDays (30 by
+  // default), so long windows only show what is still on disk — documented.
   const periods = [];
 
-  // Rolling last-30-days.
-  {
-    const days = localDayStartsBack(now, 30);
+  // Rolling windows (newest first in the dropdown).
+  for (const [key, label, nDays] of [
+    ['last30', 'Last 30 days', 30],
+    ['last90', 'Last 90 days', 90],
+    ['last180', 'Last 180 days', 180],
+  ]) {
+    const days = localDayStartsBack(now, nDays);
     const daySet = new Set(days);
     const inWin = asc.filter((e) => daySet.has(localDateStr(e.ts)));
-    periods.push(buildPeriod('last30', 'Last 30 days', inWin, days, allSources));
+    periods.push(buildPeriod(key, label, inWin, days, allSources));
   }
   // One period per calendar month present in the data (newest first, capped).
   const months = Array.from(monthKeySet).sort().reverse().slice(0, 24);

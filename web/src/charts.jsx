@@ -121,8 +121,11 @@ export function SpendChart({ period, colorMap }) {
   const innerH = H - padT - padB;
   const days = period.daily || [];
   const n = days.length || 1;
-  const gap = n > 45 ? 2 : 3;
+  const gap = n > 120 ? 1 : n > 45 ? 2 : 3;
   const bw = Math.max(2, (innerW - gap * (n - 1)) / n);
+  // Date labels every ~6 ticks regardless of window length (5 days on a
+  // 30-day window, 15 on 90, 30 on 180).
+  const labelEvery = n <= 31 ? 5 : n <= 100 ? 15 : 30;
   let max = 0;
   days.forEach((b) => { if (b.total > max) max = b.total; });
   if (max <= 0) max = 1;
@@ -206,7 +209,7 @@ export function SpendChart({ period, colorMap }) {
                 style={{ cursor: 'pointer' }}
                 onMouseMove={(e) => showTip(e, b)}
               />
-              {n <= 31 && (i % 5 === 0 || i === n - 1) && (
+              {(i % labelEvery === 0 || i === n - 1) && (n - 1 - i >= labelEvery / 2 || i === n - 1) && (
                 <text x={x + bw / 2} y={H - 6} textAnchor="middle" fill="var(--text-3)" fontSize="10" fontFamily="var(--mono)">
                   {dayLabel(b.date)}
                 </text>
