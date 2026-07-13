@@ -8,9 +8,18 @@ import {
 import { ServerPanel, StopButton } from './server-panel.jsx';
 
 export default function App() {
-  const { data, error, loading } = useSummary();
+  // Source filter — empty array means "all sources". Persisted locally.
+  const [srcFilter, setSrcFilter] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('pulse-source-filter')) || []; } catch (_) { return []; }
+  });
+  const { data, error, loading } = useSummary(10000, srcFilter);
   const [periodKey, setPeriodKey] = useState('last30');
   const [stopped, setStopped] = useState(false);
+
+  function updateFilter(next) {
+    setSrcFilter(next);
+    try { localStorage.setItem('pulse-source-filter', JSON.stringify(next)); } catch (_) {}
+  }
 
   const colorMaps = useMemo(() => ({
     src: makeColorMap(data?.allSources),
@@ -83,6 +92,12 @@ export default function App() {
           ⚠ Server unreachable ({error}) — if you stopped it, double-click <code>pulse.exe</code> to start it again.
         </div>
       )}
+      <SourceFilter
+        allSources={data.allSources || []}
+        active={srcFilter}
+        colorMap={colorMaps.src}
+        onChange={updateFilter}
+      />
       {!data.hasData ? (
         <>
           <div className="center">
@@ -98,6 +113,44 @@ export default function App() {
         <Dashboard data={data} colorMaps={colorMaps} periodKey={periodKey} setPeriodKey={setPeriodKey} onStopped={() => setStopped(true)} />
       )}
     </Shell>
+  );
+}
+
+// Multi-select source filter chips. Empty selection = all sources. The list
+// always shows every source ever seen (server keeps allSources unfiltered),
+// so a chip never disappears because you just filtered it out.
+function SourceFilter({ allSources, active, colorMap, onChange }) {
+  if (!allSources || allSources.length < 2) return null;
+  const set = new Set(active);
+  function toggle(s) {
+    const next = new Set(set);
+    if (next.has(s)) next.delete(s); else next.add(s);
+    // selecting everything = no filter
+    onChange(next.size === allSources.length ? [] : Array.from(next));
+  }
+  return (
+    <div className="srcfilter">
+      <span className="sflabel">sources</span>
+      <button
+        className={'sfchip' + (set.size === 0 ? ' on' : '')}
+        onClick={() => onChange([])}
+      >
+        all
+      </button>
+      {allSources.map((s) => (
+        <button
+          key={s}
+          className={'sfchip' + (set.has(s) ? ' on' : '')}
+          onClick={() => toggle(s)}
+          title={set.has(s) ? 'Click to remove from filter' : 'Click to show only selected sources'}
+        >
+          <i style={{ background: colorMap.get(s) }} />{s}
+        </button>
+      ))}
+      {set.size > 0 && (
+        <span className="sfnote">showing {Array.from(set).join(' + ')} only</span>
+      )}
+    </div>
   );
 }
 

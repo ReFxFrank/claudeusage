@@ -77,17 +77,21 @@ export function makeColorMap(names) {
 }
 
 // ---- data hook: fetch /api/summary on mount + every 10s ----
-export function useSummary(intervalMs = 10000) {
+// `sources` (array of source names) scopes the whole payload server-side;
+// empty/null means all sources.
+export function useSummary(intervalMs = 10000, sources = null) {
   const [state, setState] = useState({ data: null, error: null, loading: true });
   const inFlight = useRef(false);
+  const sourcesKey = (sources && sources.length) ? sources.slice().sort().join(',') : '';
 
   useEffect(() => {
     let alive = true;
+    const url = '/api/summary' + (sourcesKey ? '?sources=' + encodeURIComponent(sourcesKey) : '');
     async function refresh() {
       if (inFlight.current) return;
       inFlight.current = true;
       try {
-        const r = await fetch('/api/summary', { cache: 'no-store' });
+        const r = await fetch(url, { cache: 'no-store' });
         if (!r.ok) throw new Error('HTTP ' + r.status + ' — ' + (await r.text()).slice(0, 200));
         const data = await r.json();
         if (alive) setState({ data, error: null, loading: false });
@@ -103,7 +107,7 @@ export function useSummary(intervalMs = 10000) {
       alive = false;
       clearInterval(id);
     };
-  }, [intervalMs]);
+  }, [intervalMs, sourcesKey]);
 
   return state;
 }

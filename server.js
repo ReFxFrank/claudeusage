@@ -24,7 +24,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.2.0';
+const PULSE_VERSION = '1.2.1';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -637,6 +637,10 @@ function parseCodexFile(filePath) {
   let model = 'gpt-unknown';
   let effort = null;
   let prevTotal = null;
+  // token_count events can precede the first turn_context in a rollout; buffer
+  // those entries and backfill the model (and cost) once it is known instead
+  // of leaving a "gpt-unknown" row on the dashboard.
+  const preModelEntries = [];
 
   for (const line of raw.split('\n')) {
     if (!line) continue;
@@ -652,7 +656,14 @@ function parseCodexFile(filePath) {
       continue;
     }
     if (rec.type === 'turn_context') {
-      if (p.model) model = String(p.model);
+      if (p.model) {
+        model = String(p.model);
+        while (preModelEntries.length) {
+          const pe = preModelEntries.pop();
+          pe.model = model;
+          pe.cost = costForEntry(pe);
+        }
+      }
       const eff = p.effort ||
         (p.collaboration_mode && p.collaboration_mode.settings && p.collaboration_mode.settings.reasoning_effort);
       if (eff) effort = String(eff);
@@ -703,6 +714,7 @@ function parseCodexFile(filePath) {
       };
       e.cost = costForEntry(e);
       entries.push(e);
+      if (model === 'gpt-unknown') preModelEntries.push(e);
       continue;
     }
   }
@@ -1342,12 +1354,34 @@ function collectTitles(obj, fileName, map) {
 // HTTP SERVER  (§6)
 // ---------------------------------------------------------------------------
 
-function buildSummary() {
+// sourceFilter: optional Set of source names — the dashboard's source filter.
+// The WHOLE payload (blocks, burn, periods, sessions) reflects the filtered
+// view, while allSources/allModels stay unfiltered so the filter UI can list
+// every option and colors stay stable across filter changes.
+function buildSummary(sourceFilter) {
   const { entries, sessionMeta, ultracodeSessions, effortEvents, fileCount, codexFileCount } = parseAll();
   const desktopTitles = readDesktopTitles();
   const now = Date.now();
-  const payload = aggregate(entries, sessionMeta, desktopTitles, now,
+  let scoped = entries;
+  let appliedFilter = null;
+  if (sourceFilter && sourceFilter.size) {
+    scoped = entries.filter((e) => sourceFilter.has(e.source));
+    appliedFilter = Array.from(sourceFilter).sort();
+  }
+  const payload = aggregate(scoped, sessionMeta, desktopTitles, now,
     mergeModes(readModes(), effortEvents), ultracodeSessions);
+  if (appliedFilter) {
+    // Recompute the all-time lists from UNFILTERED entries: the filter chips
+    // must keep showing every source, and color assignment must not reshuffle.
+    const srcSet = new Set(), modelSet = new Set();
+    for (const e of entries) {
+      srcSet.add(e.source);
+      if (!HIDDEN_MODELS.has(e.model)) modelSet.add(e.model);
+    }
+    payload.allSources = Array.from(srcSet).sort();
+    payload.allModels = Array.from(modelSet).sort();
+  }
+  payload.sourceFilter = appliedFilter;
   // Surface what Pulse is actually reading, so a wrong-directory setup (e.g.
   // Claude Code under WSL while Pulse runs in native Windows) is diagnosable.
   payload.claudeDir = claudeDir();
@@ -1801,7 +1835,14 @@ function startServer(port, host, opts) {
       }
       if (route === '/api/summary') {
         const t0 = Date.now();
-        const payload = buildSummary();
+        // ?sources=cli,codex — scope the whole payload to those sources.
+        let sourceFilter = null;
+        const rawSources = new URLSearchParams(parsed.query || '').get('sources');
+        if (rawSources) {
+          const names = rawSources.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 20);
+          if (names.length) sourceFilter = new Set(names);
+        }
+        const payload = buildSummary(sourceFilter);
         payload.buildMs = Date.now() - t0;
         console.log(`[pulse] /api/summary built in ${payload.buildMs}ms`);
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });

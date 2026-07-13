@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.2.1
+
+- **Source filter:** chips above the dashboard scope EVERYTHING (spend, models,
+  sessions, block, burn rate) to any combination of sources — e.g. only
+  `claude-desktop`, or `cli` + `claude-desktop` for Claude-only. Multi-select,
+  persisted locally, colors stay stable.
+- **Chart tooltip fix:** the spend-chart hover tooltip was positioned with
+  viewport coordinates under a CSS-transformed ancestor, landing far from the
+  cursor. Now positioned container-relative — verified with a real-browser
+  hover test.
+- **No more `gpt-unknown`:** Codex usage recorded before the turn context is
+  buffered and back-attributed to the right model (and re-priced) once known.
+
 ## v1.2.0
 
 - **macOS binary:** releases now include `pulse-macos` (Apple Silicon), and the

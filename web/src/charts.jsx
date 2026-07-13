@@ -130,8 +130,8 @@ export function SpendChart({ period, colorMap }) {
   const single = period.singleSource;
 
   function showTip(ev, b) {
-    const el = tipRef.current;
-    if (!el) return;
+    const el = tipRef.current, wrap = ref.current;
+    if (!el || !wrap) return;
     let rows = '';
     srcs.forEach((s) => {
       const c = (b.bySource && b.bySource[s]) || 0;
@@ -142,17 +142,22 @@ export function SpendChart({ period, colorMap }) {
     if (!rows) rows = '<div class="tr" style="color:var(--text-3)">no spend</div>';
     el.innerHTML = `<div class="td">${b.date}</div>${rows}<div class="tr tot"><span>total</span><span class="tv">${money2(b.total)}</span></div><div class="tr" style="color:var(--text-3)"><span>tokens</span><span class="tv">${tokens(b.tokens)}</span></div>`;
     el.style.opacity = '1';
+    // Position relative to the chart container, not the viewport: an ancestor
+    // with a CSS transform (the framer-motion card) turns position:fixed into
+    // ancestor-relative, which sent the tooltip far away from the cursor.
+    const rect = wrap.getBoundingClientRect();
     const tw = el.offsetWidth, th = el.offsetHeight;
-    let left = ev.clientX + 14, top = ev.clientY + 14;
-    if (left + tw > window.innerWidth - 8) left = ev.clientX - tw - 14;
-    if (top + th > window.innerHeight - 8) top = ev.clientY - th - 14;
-    el.style.left = Math.max(8, left) + 'px';
-    el.style.top = Math.max(8, top) + 'px';
+    let left = ev.clientX - rect.left + 14;
+    let top = ev.clientY - rect.top + 14;
+    if (left + tw > rect.width - 4) left = ev.clientX - rect.left - tw - 14;
+    if (top + th > rect.height - 2) top = ev.clientY - rect.top - th - 12;
+    el.style.left = Math.max(4, left) + 'px';
+    el.style.top = Math.max(2, top) + 'px';
   }
   function hideTip() { if (tipRef.current) tipRef.current.style.opacity = '0'; }
 
   return (
-    <div ref={ref} style={{ width: '100%' }} onMouseLeave={hideTip}>
+    <div ref={ref} style={{ width: '100%', position: 'relative' }} onMouseLeave={hideTip}>
       <svg width={w} height={H} role="img" aria-label={`Daily spend for ${period.label}`}>
         <defs>
           {srcs.map((s, i) => {
