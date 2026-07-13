@@ -124,9 +124,16 @@ function costForEntry(e) {
 // PATHS & FILE DISCOVERY
 // ---------------------------------------------------------------------------
 
-// Resolve ~/.claude, honouring the CLAUDE_DIR override for non-standard installs.
+// Resolve the .claude directory. Precedence:
+//   1. CLAUDE_DIR         — Pulse's own override
+//   2. CLAUDE_CONFIG_DIR  — Claude Code's own env var (so if Claude Code writes
+//                           to a custom location, Pulse follows it automatically)
+//   3. ~/.claude          — the default
+// IMPORTANT for Windows users running Claude Code under WSL: the WSL home is a
+// different filesystem from C:\Users\<you>. Run Pulse inside the same
+// environment as Claude Code, or point CLAUDE_DIR at the right .claude.
 function claudeDir() {
-  return process.env.CLAUDE_DIR || path.join(os.homedir(), '.claude');
+  return process.env.CLAUDE_DIR || process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 }
 
 // Hand-rolled recursive walker for *.jsonl files. We deliberately avoid
@@ -397,7 +404,7 @@ function parseAll() {
   }
 
   console.log(`[pulse] walked ${files.length} file(s) in ${walkMs}ms; parsed ${parsed}, skipped ${skipped} (cached)${failed ? `, ${failed} unreadable (will retry)` : ''}; ${merged.length} unique usage records`);
-  return { entries: merged, sessionMeta };
+  return { entries: merged, sessionMeta, fileCount: files.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -847,10 +854,15 @@ function collectTitles(obj, fileName, map) {
 // ---------------------------------------------------------------------------
 
 function buildSummary() {
-  const { entries, sessionMeta } = parseAll();
+  const { entries, sessionMeta, fileCount } = parseAll();
   const desktopTitles = readDesktopTitles();
   const now = Date.now();
-  return aggregate(entries, sessionMeta, desktopTitles, now);
+  const payload = aggregate(entries, sessionMeta, desktopTitles, now);
+  // Surface what Pulse is actually reading, so a wrong-directory setup (e.g.
+  // Claude Code under WSL while Pulse runs in native Windows) is diagnosable.
+  payload.claudeDir = claudeDir();
+  payload.fileCount = fileCount;
+  return payload;
 }
 
 function readIndexHtml() {
