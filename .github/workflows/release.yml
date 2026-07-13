@@ -6,6 +6,13 @@ name: Release
 on:
   push:
     tags: ['v*']
+  # Manual trigger (Actions tab → Release → Run workflow) — creates the tag too.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
 
 permissions:
   contents: write
@@ -57,6 +64,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           files: |
             dist/pulse.exe
             dist/pulse-linux
