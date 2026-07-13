@@ -114,7 +114,11 @@ export async function postJson(path) {
   const r = await fetch(path, { method: 'POST', headers: { 'X-Pulse': '1' } });
   let body = null;
   try { body = await r.json(); } catch (_) {}
-  if (!r.ok) throw new Error((body && body.error) || 'HTTP ' + r.status);
+  if (!r.ok) {
+    const err = new Error((body && body.error) || 'HTTP ' + r.status);
+    err.status = r.status; // lets callers tell an HTTP failure from a dropped connection
+    throw err;
+  }
   return body || {};
 }
 

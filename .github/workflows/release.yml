@@ -73,9 +73,17 @@ jobs:
             **Pulse** — a local Claude Code usage dashboard.
 
             ### Download
-            - **Windows:** `pulse.exe` — double-click it; the dashboard opens at http://localhost:4747.
-              Windows SmartScreen may warn because the binary is unsigned: click **More info → Run anyway**.
+            - **Windows:** `pulse.exe` — double-click it; Pulse runs in the background (no console
+              window) and the dashboard opens at http://localhost:4747. Logs, updates and Stop live
+              in the dashboard's **Server panel**. SmartScreen may warn because the binary is
+              unsigned: click **More info → Run anyway**.
             - **Linux:** `pulse-linux` — `chmod +x pulse-linux && ./pulse-linux`
 
-            Everything runs locally: Pulse reads `~/.claude` read-only and makes no network calls.
-            Optional reasoning-effort logging: run `pulse.exe --effort-setup` and follow the printed steps.
+            From v1.1.0 Pulse can update itself: when a new release is out, the header shows an
+            update pill and the Server panel installs it in one click (sha256-verified).
+            Double-clicking a newer `pulse.exe` over a running old one takes over automatically.
+
+            Everything runs locally: Pulse reads `~/.claude` read-only; its only network call is
+            the GitHub version check (`--no-update-check` disables it).
+            Reasoning-effort chips work out of the box (`/effort` commands are read from your
+            transcripts); `pulse.exe --effort-setup` adds optional settings-level logging.

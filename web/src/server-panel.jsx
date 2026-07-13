@@ -69,8 +69,9 @@ export function ServerPanel({ data, delay = 0.36 }) {
       };
       setTimeout(poll, 2000);
     } catch (e) {
-      // The connection can drop mid-request when the server swaps — treat it
-      // like a restart in progress rather than a failure.
+      // A real HTTP response (403/500) is a failure; only a DROPPED connection
+      // means the server is swapping out from under the request.
+      if (e.status) { setNote('Install failed: ' + e.message); setBusy(null); return; }
       setNote('Pulse is restarting…');
       const t0 = Date.now();
       const poll = async () => {

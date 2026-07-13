@@ -57,12 +57,16 @@ export default function App() {
       footer={data}
     >
       {!data.hasData ? (
-        <div className="center">
-          <div>
-            <h2>No usage yet</h2>
-            <p>Pulse is watching <code>{data.claudeDir}</code>. Run Claude Code and your usage appears here — the page refreshes every 10 seconds.</p>
+        <>
+          <div className="center">
+            <div>
+              <h2>No usage yet</h2>
+              <p>Pulse is watching <code>{data.claudeDir}</code>. Run Claude Code and your usage appears here — the page refreshes every 10 seconds.</p>
+            </div>
           </div>
-        </div>
+          {/* the background process must stay controllable even with no data */}
+          <ServerPanel data={data} delay={0.2} />
+        </>
       ) : (
         <Dashboard data={data} colorMaps={colorMaps} periodKey={periodKey} setPeriodKey={setPeriodKey} />
       )}

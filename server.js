@@ -35,8 +35,12 @@ let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 // background process, appended to ~/.pulse/pulse.log.
 // ---------------------------------------------------------------------------
 const LOG_RING_MAX = 400;
+const LOG_FILE_MAX = 2 * 1024 * 1024;
 const logRing = [];
 let logFileStream = null;
+let logFilePath = null;
+let logFileBytes = 0;
+let logRotating = false;
 
 function pushLogLine(level, args) {
   let text;
@@ -46,8 +50,24 @@ function pushLogLine(level, args) {
   logRing.push({ ts: Date.now(), level, text });
   if (logRing.length > LOG_RING_MAX) logRing.splice(0, logRing.length - LOG_RING_MAX);
   if (logFileStream) {
-    try { logFileStream.write(new Date().toISOString() + ' ' + level.toUpperCase().padEnd(5) + ' ' + text + '\n'); } catch (_) {}
+    const line = new Date().toISOString() + ' ' + level.toUpperCase().padEnd(5) + ' ' + text + '\n';
+    try { logFileStream.write(line); logFileBytes += Buffer.byteLength(line); } catch (_) {}
+    if (logFileBytes > LOG_FILE_MAX) rotateLogFile(); // rotate during the run, not just at open
   }
+}
+
+function rotateLogFile() {
+  if (logRotating || !logFileStream || !logFilePath) return;
+  logRotating = true;
+  try {
+    const old = logFileStream;
+    logFileStream = null;
+    try { old.end(); } catch (_) {}
+    try { fs.unlinkSync(logFilePath + '.1'); } catch (_) {}
+    try { fs.renameSync(logFilePath, logFilePath + '.1'); } catch (_) {}
+  } catch (_) {}
+  openLogFile();
+  logRotating = false;
 }
 
 {
@@ -73,12 +93,30 @@ function openLogFile() {
   try {
     fs.mkdirSync(pulseHome(), { recursive: true });
     const p = path.join(pulseHome(), 'pulse.log');
-    try { // simple 2MB rotation
+    logFilePath = p;
+    try { // rotate an oversized file from a previous run
       const st = fs.statSync(p);
-      if (st.size > 2 * 1024 * 1024) { try { fs.unlinkSync(p + '.1'); } catch (_) {} fs.renameSync(p, p + '.1'); }
+      if (st.size > LOG_FILE_MAX) { try { fs.unlinkSync(p + '.1'); } catch (_) {} fs.renameSync(p, p + '.1'); }
     } catch (_) {}
-    logFileStream = fs.createWriteStream(p, { flags: 'a' });
+    logFileBytes = 0;
+    try { logFileBytes = fs.statSync(p).size; } catch (_) {}
+    const s = fs.createWriteStream(p, { flags: 'a' });
+    // An async write error (disk full, folder removed) must never crash the
+    // hidden daemon — drop file logging and keep the ring buffer working.
+    s.on('error', () => {
+      try { s.destroy(); } catch (_) {}
+      if (logFileStream === s) logFileStream = null;
+    });
+    logFileStream = s;
   } catch (_) {}
+}
+
+// Wrap a callback so multiple emission paths (stream error + end, request
+// error + timeout) can never fire it twice — a double res.writeHead from a
+// double callback would crash the whole server.
+function once(fn) {
+  let called = false;
+  return function (...a) { if (called) return; called = true; return fn && fn(...a); };
 }
 
 // ---------------------------------------------------------------------------
@@ -1170,6 +1208,7 @@ function versionNum(v) {
 // accepted only for the PULSE_UPDATE_API test override; production URLs are
 // https.
 function fetchUrl(u, opts, cb) {
+  cb = once(cb); // error + end / timeout can otherwise both fire it
   const { asStream = false, timeoutMs = 20000, redirects = 5 } = opts || {};
   let mod;
   try { mod = u.startsWith('https:') ? require('https') : http; } catch (e) { return cb(e); }
@@ -1236,7 +1275,9 @@ function checkForUpdate(done) {
     } : null;
     if (versionNum(updateState.latest) > versionNum(PULSE_VERSION)) {
       updateState.status = 'available';
-      updateState.installSupported = !!(seaApi && updateAsset && updateAsset.url);
+      // One-click install requires a verifiable download: no published sha256
+      // digest → the UI offers the releases page instead (fail closed).
+      updateState.installSupported = !!(seaApi && updateAsset && updateAsset.url && updateAsset.digest);
       console.log(`[pulse] update available: v${updateState.latest} (running v${PULSE_VERSION}) — ${RELEASES_PAGE}`);
     } else {
       updateState.status = 'uptodate';
@@ -1247,9 +1288,13 @@ function checkForUpdate(done) {
 }
 
 function installUpdate(done) {
-  if (updateState.status !== 'available') return done && done(new Error('no update staged — run a check first'));
-  if (!seaApi) return done && done(new Error('running from source — update with git pull'));
-  if (!updateAsset || !updateAsset.url) return done && done(new Error('no downloadable asset for this platform'));
+  done = once(done);
+  if (updateState.status !== 'available') return done(new Error('no update staged — run a check first'));
+  if (!seaApi) return done(new Error('running from source — update with git pull'));
+  if (!updateAsset || !updateAsset.url) return done(new Error('no downloadable asset for this platform'));
+  // Integrity is not optional: without a published digest there is nothing to
+  // verify the download against, so refuse and point at the releases page.
+  if (!updateAsset.digest) return done(new Error('release asset has no sha256 digest — download manually: ' + RELEASES_PAGE));
 
   const exePath = process.execPath;
   const downloadPath = exePath + '.download';
@@ -1274,7 +1319,10 @@ function installUpdate(done) {
       try {
         const digest = hash.digest('hex');
         if (bytes < 5 * 1024 * 1024) return failInstall(`download too small (${bytes} bytes)`, done);
-        if (updateAsset.digest && digest !== updateAsset.digest) {
+        if (updateAsset.size > 0 && bytes !== updateAsset.size) {
+          return failInstall(`size mismatch (got ${bytes}, expected ${updateAsset.size})`, done);
+        }
+        if (digest !== updateAsset.digest) { // digest presence enforced above
           return failInstall('sha256 mismatch — refusing to install', done);
         }
         updateState.status = 'installing';
@@ -1312,17 +1360,36 @@ function failInstall(msg, done) {
 
 function relaunchAfterUpdate(exePath) {
   const passthrough = process.argv.slice(2).filter((a) => a !== '--after-update');
-  if (process.platform === 'win32' && !passthrough.includes('--daemon-child')) passthrough.push('--daemon-child');
+  // Respect an explicit console run: --no-daemon relaunches into a fresh
+  // visible console window instead of silently going hidden.
+  const wantConsole = passthrough.includes('--no-daemon');
+  if (process.platform === 'win32' && !wantConsole && !passthrough.includes('--daemon-child')) {
+    passthrough.push('--daemon-child');
+  }
   console.log(`[pulse] restarting as v${updateState.latest}…`);
+  if (wantConsole && process.platform === 'win32') {
+    console.log('[pulse] (Pulse reopens in a new console window)');
+  }
+  const relaunchFailed = (e) => {
+    updateState.status = 'error';
+    updateState.error = 'relaunch failed: ' + ((e && e.message) || e) +
+      ` — the new version is installed at ${exePath}; start it manually.`;
+    console.error('[pulse] ' + updateState.error);
+  };
   setTimeout(() => {
+    let child;
     try {
-      const child = require('child_process').spawn(exePath, [...passthrough, '--after-update'],
-        { detached: true, stdio: 'ignore', windowsHide: true });
+      child = require('child_process').spawn(exePath, [...passthrough, '--after-update'],
+        { detached: true, stdio: 'ignore', windowsHide: !wantConsole });
       child.unref();
     } catch (e) {
-      console.error('[pulse] relaunch failed: ' + e.message + ' — start the new version manually.');
+      relaunchFailed(e); // keep serving on the old process instead of dying
+      return;
     }
-    setTimeout(() => process.exit(0), 400);
+    let failed = false;
+    child.once('error', (e) => { failed = true; relaunchFailed(e); });
+    // Exit only if the spawn didn't error out (ENOENT etc. fire quickly).
+    setTimeout(() => { if (!failed) process.exit(0); }, 700);
   }, 300);
 }
 
@@ -1337,6 +1404,11 @@ function cleanupOldExecutable() {
       console.log('[pulse] removed previous version (' + path.basename(oldPath) + ')');
     }
   } catch (_) { /* still locked — next start */ }
+  // A crash mid-download can strand a partial .download file too.
+  try {
+    const dl = process.execPath + '.download';
+    if (fs.existsSync(dl)) fs.unlinkSync(dl);
+  } catch (_) { /* next start */ }
 }
 
 // The built React frontend (Vite output). Served as static files; the server
@@ -1419,9 +1491,25 @@ function allowMutation(req, res) {
   return false;
 }
 
+// DNS-rebinding guard for data reads. A malicious page can point its own
+// hostname at 127.0.0.1 and fetch same-origin — the browser then happily
+// exposes the response. When Pulse is bound to loopback, only answer requests
+// whose Host header is a loopback name. (An explicit --host network bind is
+// the documented VPS opt-in, where foreign Hosts are expected.)
+function allowRead(req, res, boundLoopback) {
+  if (!boundLoopback) return true;
+  const hostHdr = String(req.headers.host || '')
+    .replace(/:\d+$/, '').replace(/^\[|\]$/g, '').toLowerCase();
+  if (LOOPBACK_HOSTS.has(hostHdr)) return true;
+  res.writeHead(403, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'forbidden' }));
+  return false;
+}
+
 // Probe whether a running instance answers /api/health on the port.
 // cb receives { kind: 'pulse', version } | { kind: 'other' } | { kind: 'free' }.
 function probeInstance(port, cb) {
+  cb = once(cb); // error/timeout/end can otherwise race a double call
   const req = http.get({ host: '127.0.0.1', port, path: '/api/health', timeout: 1500 }, (res) => {
     let body = '';
     res.on('data', (d) => { body += d; if (body.length > 65536) req.destroy(); });
@@ -1476,15 +1564,22 @@ function holdOpenAndExit(code) {
 
 function openBrowser(port) {
   if (process.platform !== 'win32') return;
-  try { require('child_process').exec(`start "" "http://localhost:${port}"`); } catch (_) {}
+  // windowsHide: launched from the hidden daemon, cmd.exe must not flash a
+  // console; `start` (ShellExecute) still opens the default browser fine.
+  try { require('child_process').exec(`start "" "http://localhost:${port}"`, { windowsHide: true }); } catch (_) {}
 }
 
 function startServer(port, host, opts) {
+  const boundLoopback = LOOPBACK_HOSTS.has(host);
   const server = http.createServer((req, res) => {
     const parsed = url.parse(req.url);
     const route = parsed.pathname;
 
     try {
+      // Every API route — including plain reads — refuses foreign Host
+      // headers on a loopback bind (DNS-rebinding guard). Mutations add
+      // stricter checks on top (allowMutation).
+      if (route.startsWith('/api/') && !allowRead(req, res, boundLoopback)) return;
       if (route === '/api/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, version: PULSE_VERSION, pid: process.pid }));
@@ -1604,15 +1699,17 @@ function shouldDaemonize(args) {
 
 function daemonize(args, port, host) {
   probeInstance(port, (inst) => {
-    if (inst.kind === 'pulse' && inst.version === PULSE_VERSION) {
-      console.log(`[pulse] v${PULSE_VERSION} is already running — opening the dashboard.`);
+    // Same version OR NEWER already running → just open its dashboard. Never
+    // auto-replace a newer Pulse with an older exe (silent downgrade).
+    if (inst.kind === 'pulse' && versionNum(inst.version) >= versionNum(PULSE_VERSION)) {
+      console.log(`[pulse] v${inst.version || PULSE_VERSION} is already running — opening the dashboard.`);
       openBrowser(port);
       setTimeout(() => process.exit(0), 1200);
       return;
     }
     if (inst.kind === 'pulse') {
-      // A different Pulse version holds the port. v1.1.0+ accepts a local stop
-      // request; anything older must be closed by hand.
+      // An OLDER Pulse holds the port. v1.1.0+ accepts a local stop request;
+      // anything older must be closed by hand.
       console.log(`[pulse] replacing running Pulse ${inst.version ? 'v' + inst.version : '(pre-1.1.0)'}…`);
       requestShutdown(port, (ok) => {
         if (!ok) {
@@ -1643,12 +1740,21 @@ function daemonize(args, port, host) {
 }
 
 function requestShutdown(port, cb) {
+  cb = once(cb);
   const req = http.request({
     host: '127.0.0.1', port, path: '/api/shutdown', method: 'POST',
     headers: { 'X-Pulse': '1', 'Host': 'localhost' }, timeout: 2500,
   }, (res) => {
-    res.resume();
-    cb(res.statusCode === 200);
+    // Pre-1.1.0 Pulse serves the SPA fallback (200 text/html) for unknown
+    // routes — only a real {ok:true} JSON acknowledgment counts as stopped.
+    let body = '';
+    res.on('data', (d) => { body += d; if (body.length > 65536) req.destroy(); });
+    res.on('end', () => {
+      let ok = false;
+      try { ok = res.statusCode === 200 && JSON.parse(body).ok === true; } catch (_) {}
+      cb(ok);
+    });
+    res.on('error', () => cb(false));
   });
   req.on('error', () => cb(false));
   req.on('timeout', () => { req.destroy(); cb(false); });
@@ -1859,7 +1965,9 @@ function updateCheckEnabled(args) {
 
 function serverOpts(args) {
   return {
-    open: !args.noOpen,
+    // After a self-update the existing dashboard tab reloads itself — opening
+    // another tab would duplicate it.
+    open: !args.noOpen && !args.afterUpdate,
     updateCheck: updateCheckEnabled(args),
     // an updated/replacing instance may need a moment for the old one's port
     retryBindUntil: (args.afterUpdate || args.daemonChild) ? Date.now() + 10000 : 0,
@@ -1951,7 +2059,10 @@ function main() {
   if (args.inspectSchema) { inspectSchema(); return; }
   const port = resolvePort(args);
   const host = resolveHost(args);
-  if (args.daemonChild) { IS_DAEMON_CHILD = true; openLogFile(); }
+  if (args.daemonChild) IS_DAEMON_CHILD = true;
+  // Detached processes (hidden daemon, post-update relaunch on any platform)
+  // have no console — their output must land in ~/.pulse/pulse.log.
+  if (args.daemonChild || args.afterUpdate) openLogFile();
   if (shouldDaemonize(args)) { daemonize(args, port, host); return; }
   startServer(port, host, serverOpts(args));
 }
