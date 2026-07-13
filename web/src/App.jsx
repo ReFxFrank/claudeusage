@@ -225,7 +225,7 @@ function Shell({ children, header, footer, version, codex }) {
             (disable with <code>--no-update-check</code>).
           </div>
           <div className="reading">
-            reading: {footer.claudeDir} · {num((footer.fileCount || 0) - (footer.codexFileCount || 0))} session file{footer.fileCount === 1 ? '' : 's'}
+            reading: {footer.claudeDir} · {num((footer.fileCount || 0) - (footer.codexFileCount || 0))} session file{(footer.fileCount || 0) - (footer.codexFileCount || 0) === 1 ? '' : 's'}
             {footer.hasCodex ? <> &nbsp;+&nbsp; {footer.codexDir} · {num(footer.codexFileCount)} codex file{footer.codexFileCount === 1 ? '' : 's'}</> : null}
           </div>
         </footer>

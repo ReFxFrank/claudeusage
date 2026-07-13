@@ -226,10 +226,11 @@ function priceFor(model, ts) {
 function costForEntry(e) {
   if (e.provider === 'openai') {
     const p = priceForOpenAI(e.model);
+    const cachedPrice = p.cachedInput != null ? p.cachedInput : p.input * OPENAI_CACHE_READ_MULT;
     return (
       (e.inputTokens  / 1e6) * p.input +
       (e.outputTokens / 1e6) * p.output +
-      (e.cacheRead    / 1e6) * p.input * OPENAI_CACHE_READ_MULT
+      (e.cacheRead    / 1e6) * cachedPrice
     );
   }
   const price = priceFor(e.model, e.ts);
@@ -250,34 +251,55 @@ function costForEntry(e) {
 // like the Claude table above. Cached input bills at ~10% of the input price
 // for the gpt-5 family; output prices include reasoning tokens.
 // ---------------------------------------------------------------------------
+// Each row: { input, output, cachedInput } in $/MTok. cachedInput is the
+// published cached-input rate for that model (it is NOT a fixed fraction of
+// input across the lineup: 10% for gpt-5 family, 25% for o3/o4-mini/gpt-4.1,
+// 50% for gpt-4o/o3-mini; models without cache discounts bill cached at full
+// input price). Rows without cachedInput default to 10% of input.
 const PRICING_OPENAI = {
-  // Codex defaults (gpt-5.x family — verify at platform.openai.com/pricing)
-  'gpt-5.6':            { input: 1.25, output: 10 },
-  'gpt-5.1-codex-mini': { input: 0.25, output: 2 },
-  'gpt-5.1-codex':      { input: 1.25, output: 10 },
-  'gpt-5.1':            { input: 1.25, output: 10 },
-  'gpt-5-codex':        { input: 1.25, output: 10 },
-  'gpt-5-mini':         { input: 0.25, output: 2 },
-  'gpt-5-nano':         { input: 0.05, output: 0.4 },
-  'gpt-5':              { input: 1.25, output: 10 },
-  'codex-mini-latest':  { input: 1.5,  output: 6 },
-  // Older strings that can appear in history
-  'o3':                 { input: 2,    output: 8 },
-  'o4-mini':            { input: 1.1,  output: 4.4 },
-  'gpt-4.1':            { input: 2,    output: 8 },
-  'gpt-4o':             { input: 2.5,  output: 10 },
+  // Codex defaults (gpt-5.x family)
+  'gpt-5.6-sol':        { input: 1.25, output: 10,  cachedInput: 0.125 },
+  'gpt-5.6':            { input: 1.25, output: 10,  cachedInput: 0.125 },
+  'gpt-5.1-codex-mini': { input: 0.25, output: 2,   cachedInput: 0.025 },
+  'gpt-5.1-codex-max':  { input: 1.25, output: 10,  cachedInput: 0.125 },
+  'gpt-5.1-codex':      { input: 1.25, output: 10,  cachedInput: 0.125 },
+  'gpt-5.1':            { input: 1.25, output: 10,  cachedInput: 0.125 },
+  'gpt-5-codex':        { input: 1.25, output: 10,  cachedInput: 0.125 },
+  'gpt-5-mini':         { input: 0.25, output: 2,   cachedInput: 0.025 },
+  'gpt-5-nano':         { input: 0.05, output: 0.4, cachedInput: 0.005 },
+  'gpt-5-pro':          { input: 15,   output: 120, cachedInput: 15 },
+  'gpt-5':              { input: 1.25, output: 10,  cachedInput: 0.125 },
+  'codex-mini-latest':  { input: 1.5,  output: 6,   cachedInput: 0.375 },
+  // Older strings that can appear in history. NOTE: unlike Anthropic's dated
+  // snapshots, OpenAI suffixes (-mini/-pro/-nano) are DIFFERENT models at
+  // different prices — each needs its own exact row.
+  'o3-deep-research':   { input: 10,   output: 40,  cachedInput: 2.5 },
+  'o3-mini':            { input: 1.1,  output: 4.4, cachedInput: 0.55 },
+  'o3-pro':             { input: 20,   output: 80,  cachedInput: 20 },
+  'o3':                 { input: 2,    output: 8,   cachedInput: 0.5 },
+  'o4-mini':            { input: 1.1,  output: 4.4, cachedInput: 0.275 },
+  'gpt-4.1-mini':       { input: 0.4,  output: 1.6, cachedInput: 0.1 },
+  'gpt-4.1-nano':       { input: 0.1,  output: 0.4, cachedInput: 0.025 },
+  'gpt-4.1':            { input: 2,    output: 8,   cachedInput: 0.5 },
+  'gpt-4o-mini':        { input: 0.15, output: 0.6, cachedInput: 0.075 },
+  'gpt-4o':             { input: 2.5,  output: 10,  cachedInput: 1.25 },
   // Fallback for unknown / new model strings (logged once, same as Claude).
   '__default__':        { input: 1.25, output: 10 },
 };
-const OPENAI_CACHE_READ_MULT = 0.10;
+const OPENAI_CACHE_READ_MULT = 0.10; // default when a row has no cachedInput
 
 function priceForOpenAI(model) {
   let p = PRICING_OPENAI[model];
   if (!p) {
-    // Longest-prefix match: gpt-5.1-codex-mini beats gpt-5.1-codex beats gpt-5.
+    // Prefix fallback ONLY for dated snapshots ("gpt-4.1-2025-04-14"). OpenAI
+    // family suffixes (-mini/-pro/-nano) are different models at different
+    // prices, so any non-date remainder falls through to the logged default —
+    // mispricing must be visible, never silent.
     let best = '';
     for (const key of Object.keys(PRICING_OPENAI)) {
-      if (key !== '__default__' && model.startsWith(key) && key.length > best.length) best = key;
+      if (key === '__default__' || !model.startsWith(key) || key.length <= best.length) continue;
+      const rest = model.slice(key.length);
+      if (/^-(\d{4}-\d{2}-\d{2}|\d{8})$/.test(rest)) best = key;
     }
     if (best) p = PRICING_OPENAI[best];
   }
@@ -670,7 +692,10 @@ function parseCodexFile(filePath) {
         webSearches: 0,
         sessionId: sid || path.basename(filePath, '.jsonl'),
         project,
-        effort, // parse-time; annotateModes preserves pre-set values
+        // Parse-time effort lives in its own immutable field; annotateModes
+        // seeds from it every pass, so e.effort stays a pure per-pass output
+        // (cached entries are re-annotated on every request).
+        parseEffort: effort,
         // Replay-safe key: a resumed rollout replaying the same cumulative
         // snapshot at the same timestamp dedups to one entry. Falls back to
         // the filename so sid-less files can never collide with each other.
@@ -823,10 +848,12 @@ function mergeModes(sidecarBySession, effortEvents) {
 // real prompt still opts the whole session in.
 function annotateModes(entriesAsc, modesBySession, ultracodeSessions) {
   for (const e of entriesAsc) {
-    // Codex entries carry effort straight from their rollout's turn_context —
-    // set at parse time; never overwrite it with (absent) Claude-side records.
-    let effort = e.effort || null;
-    let ultra = !!e.ultracode || ultracodeSessions.has(e.sessionId);
+    // Codex entries carry effort from their rollout's turn_context, stored in
+    // the immutable parseEffort field. Seed from THAT (never from e.effort,
+    // which is this function's own output — cached entries are re-annotated
+    // every request and must not feed a prior pass back in as input).
+    let effort = e.parseEffort || null;
+    let ultra = ultracodeSessions.has(e.sessionId);
     const recs = modesBySession[e.sessionId];
     if (recs && recs.length) {
       let chosen = null;
