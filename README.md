@@ -29,10 +29,11 @@ which sessions ran at which reasoning effort — all from the logs already on yo
 - 🟢 **OpenAI Codex support** — if you also use the [Codex CLI](https://github.com/openai/codex),
   Pulse ingests `~/.codex/sessions` automatically: `gpt-*` model rows, a `codex`
   source, session titles, reasoning-effort chips, and costs at OpenAI list prices.
-- 📡 **Official account meters (opt-in)** — Anthropic's own 5-hour/weekly
-  utilization with **true reset times**. Limits are unified, so these bars
-  include claude.ai chats, cloud sessions, and other devices — usage no local
-  log can see.
+- 📡 **Official account meters** — provider-issued gauges with **true reset
+  times**: Anthropic's account-wide 5-hour/weekly bars (opt-in; includes
+  claude.ai chats, cloud sessions, other devices) and your ChatGPT plan's
+  **Codex session/weekly allowance** (automatic — read from snapshots Codex
+  already writes to its local logs).
 - 🧠 **Reasoning-effort chips** — see which sessions ran at `low → max`, ultracode, or
   fast mode. Works **out of the box, retroactively**: Pulse reads your `/effort`
   commands straight from the session transcripts.
@@ -151,9 +152,17 @@ alongside Claude Code — nothing to configure:
 - The **Current 5h block** stays Claude-only: Codex has its own separate
   limit windows and must not distort Claude's reset countdown.
 
+**Codex official meters:** every Codex turn also records a snapshot of your
+ChatGPT plan's Codex allowance (session + weekly windows) in the rollout log.
+Pulse shows the newest snapshot in the **Account limits** card automatically —
+no login, nothing leaves your machine — labeled with how fresh it is (run any
+Codex turn to refresh; a window that rolled over since the snapshot shows as
+stale rather than a made-up number).
+
 **Scope:** this covers the Codex *CLI*, which logs locally. ChatGPT in the
 browser or mobile app writes no local logs (same as claude.ai) and cannot
-appear — no local dashboard can see it.
+appear — no local dashboard can see it. The Codex meters reflect your plan's
+Codex allowance, not chatgpt.com chat limits (those are exposed nowhere).
 
 ## 📡 Account meters — regular chats included (opt-in)
 

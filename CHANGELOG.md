@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.4.0
+
+- **Official Codex meters (automatic):** the Account-limits card now also shows
+  your ChatGPT plan's Codex allowance — session and weekly windows with true
+  reset countdowns — parsed from the rate-limit snapshots Codex already writes
+  into its local rollout logs on every turn. No login, no network call, nothing
+  leaves the machine. Rows are labeled with snapshot freshness ("as of Xm ago");
+  a window that rolled over since the last turn shows as stale instead of a
+  stale percentage. Handles both absolute (ISO / epoch-seconds) and legacy
+  relative reset formats.
+
 ## v1.3.1
 
 - **Account meters no longer trust the local expiry stamp:** Pulse attempts the

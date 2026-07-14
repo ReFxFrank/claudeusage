@@ -24,7 +24,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.3.1';
+const PULSE_VERSION = '1.4.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -647,6 +647,10 @@ function parseCodexFile(filePath) {
   let model = 'gpt-unknown';
   let effort = null;
   let prevTotal = null;
+  // Codex token_count events also carry a rate_limits snapshot of the ChatGPT
+  // account's Codex allowance (primary=session window, secondary=weekly) —
+  // official meters, straight from the local log. Keep the newest one.
+  let rateSnapshot = null;
   // token_count events can precede the first turn_context in a rollout; buffer
   // those entries and backfill the model (and cost) once it is known instead
   // of leaving a "gpt-unknown" row on the dashboard.
@@ -689,6 +693,9 @@ function parseCodexFile(filePath) {
       const info = p.info || {};
       const ts = Date.parse(rec.timestamp);
       if (!isFinite(ts)) continue;
+      if (p.rate_limits && typeof p.rate_limits === 'object' && (!rateSnapshot || ts >= rateSnapshot.ts)) {
+        rateSnapshot = { ts, limits: p.rate_limits };
+      }
       const tot = info.total_token_usage || null;
       let u = info.last_token_usage || null;
       if (!u && tot) u = prevTotal ? diffUsage(tot, prevTotal) : tot;
@@ -728,7 +735,47 @@ function parseCodexFile(filePath) {
       continue;
     }
   }
-  return { entries, sessionMeta, ultracodeSessions: [], effortEvents: [] };
+  return { entries, sessionMeta, ultracodeSessions: [], effortEvents: [], codexRateSnapshot: rateSnapshot };
+}
+
+// Turn the newest Codex rate_limits snapshot into display buckets. resets_at
+// has been absolute (epoch seconds or ISO) in recent versions and
+// resets_in_seconds (relative to the event) in older ones — handle all three.
+// used_percent is 0–100. A bucket whose reset time has already passed is
+// marked stale: the window rolled over since the snapshot, so its percentage
+// no longer means anything.
+function codexMetersFromSnapshot(snap) {
+  if (!snap || !snap.limits) return null;
+  const buckets = [];
+  const addWindow = (key, w) => {
+    if (!w || typeof w !== 'object') return;
+    const pct = w.used_percent;
+    if (typeof pct !== 'number' || !isFinite(pct)) return;
+    const mins = num(w.window_minutes || w.window_duration_mins);
+    let resetsAt = null;
+    const ra = w.resets_at;
+    if (typeof ra === 'number' && isFinite(ra)) resetsAt = ra < 1e12 ? ra * 1000 : ra;
+    else if (typeof ra === 'string') { const t = Date.parse(ra); if (isFinite(t)) resetsAt = t; }
+    else if (typeof w.resets_in_seconds === 'number' && isFinite(w.resets_in_seconds)) {
+      resetsAt = snap.ts + w.resets_in_seconds * 1000;
+    }
+    let label;
+    if (mins && mins <= 360) label = 'Codex · session (5h)';
+    else if (mins && mins >= 8000 && mins <= 12000) label = 'Codex · weekly';
+    else if (mins) label = 'Codex · ' + (mins % 1440 === 0 ? (mins / 1440) + '-day' : mins + '-min');
+    else label = key === 'primary' ? 'Codex · session' : 'Codex · weekly';
+    buckets.push({
+      key: 'codex_' + key,
+      label,
+      pct: Math.max(0, Math.min(100, pct)),
+      resetsAt,
+      stale: resetsAt != null && resetsAt < Date.now(),
+    });
+  };
+  addWindow('primary', snap.limits.primary);
+  addWindow('secondary', snap.limits.secondary);
+  if (!buckets.length) return null;
+  return { asOf: snap.ts, buckets };
 }
 
 // Walk all files; reuse cached parse when mtime is unchanged. Returns the merged
@@ -765,6 +812,7 @@ function parseAll() {
       sessionMeta: result.sessionMeta,
       ultracodeSessions: result.ultracodeSessions || [],
       effortEvents: result.effortEvents || [],
+      codexRateSnapshot: result.codexRateSnapshot || null,
     });
     parsed++;
   }
@@ -779,7 +827,8 @@ function parseAll() {
   const sessionMeta = {};
   const ultracodeSessions = new Set();
   const effortEvents = [];
-  for (const { entries, sessionMeta: sm, ultracodeSessions: us, effortEvents: ev } of fileCache.values()) {
+  let codexRateSnapshot = null;
+  for (const { entries, sessionMeta: sm, ultracodeSessions: us, effortEvents: ev, codexRateSnapshot: rs } of fileCache.values()) {
     for (const e of entries) {
       if (globalSeen.has(e.key)) continue;
       globalSeen.add(e.key);
@@ -787,6 +836,7 @@ function parseAll() {
     }
     for (const sid of us || []) ultracodeSessions.add(sid);
     for (const e of ev || []) effortEvents.push(e);
+    if (rs && (!codexRateSnapshot || rs.ts > codexRateSnapshot.ts)) codexRateSnapshot = rs;
     for (const sid of Object.keys(sm)) {
       const cur = sessionMeta[sid];
       const inc = sm[sid];
@@ -803,6 +853,7 @@ function parseAll() {
   return {
     entries: merged, sessionMeta, ultracodeSessions, effortEvents,
     fileCount: files.length, codexFileCount: codexFiles.length,
+    codexRateSnapshot,
   };
 }
 
@@ -1375,7 +1426,7 @@ function collectTitles(obj, fileName, map) {
 // view, while allSources/allModels stay unfiltered so the filter UI can list
 // every option and colors stay stable across filter changes.
 function buildSummary(sourceFilter) {
-  const { entries, sessionMeta, ultracodeSessions, effortEvents, fileCount, codexFileCount } = parseAll();
+  const { entries, sessionMeta, ultracodeSessions, effortEvents, fileCount, codexFileCount, codexRateSnapshot } = parseAll();
   const desktopTitles = readDesktopTitles();
   const now = Date.now();
   let scoped = entries;
@@ -1413,6 +1464,10 @@ function buildSummary(sourceFilter) {
   payload.packaged = !!seaApi;
   payload.update = updateState;
   payload.meters = metersForPayload();
+  // Codex official meters come from rate_limits snapshots already present in
+  // the local rollout logs — no opt-in needed, nothing leaves the machine.
+  // Account-level, so computed from the unfiltered parse.
+  payload.codexMeters = codexMetersFromSnapshot(codexRateSnapshot);
   return payload;
 }
 
