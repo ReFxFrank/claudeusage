@@ -8,10 +8,10 @@
 See what you're spending, which models you're burning it on, your 5-hour block, and
 which sessions ran at which reasoning effort — all from the logs already on your machine.
 
-[![Release](https://img.shields.io/github/v/release/ReFxFrank/claudeusage?color=8f7ff5&label=release)](https://github.com/ReFxFrank/claudeusage/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/ReFxFrank/claudeusage/total?color=8f7ff5&label=downloads)](https://github.com/ReFxFrank/claudeusage/releases)
+[![Release](https://img.shields.io/github/v/release/ReFxFrank/Pulse-Usage-Monitor?color=8f7ff5&label=release)](https://github.com/ReFxFrank/Pulse-Usage-Monitor/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/ReFxFrank/Pulse-Usage-Monitor/total?color=8f7ff5&label=downloads)](https://github.com/ReFxFrank/Pulse-Usage-Monitor/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-22b892.svg)](LICENSE)
-[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-4a9bf5)](https://github.com/ReFxFrank/claudeusage/releases/latest)
+[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-4a9bf5)](https://github.com/ReFxFrank/Pulse-Usage-Monitor/releases/latest)
 [![Runtime deps](https://img.shields.io/badge/runtime%20deps-0-e0a132)](package.json)
 
   <img src=".github/assets/hero.png" alt="Pulse dashboard" width="920" />
@@ -56,7 +56,7 @@ which sessions ran at which reasoning effort — all from the logs already on yo
 ### Download (easiest — no Node required)
 
 Grab the latest single-file executable from
-**[Releases](https://github.com/ReFxFrank/claudeusage/releases/latest)**:
+**[Releases](https://github.com/ReFxFrank/Pulse-Usage-Monitor/releases/latest)**:
 
 | Platform | Get running |
 | --- | --- |
@@ -82,7 +82,7 @@ Starting is idempotent — if Pulse is already running, double-clicking just ope
 Node ≥ 18, zero runtime dependencies; the pre-built frontend is committed:
 
 ```sh
-git clone https://github.com/ReFxFrank/claudeusage && cd claudeusage
+git clone https://github.com/ReFxFrank/Pulse-Usage-Monitor && cd Pulse-Usage-Monitor
 node server.js          # → http://localhost:4747
 ```
 
@@ -93,7 +93,7 @@ single-file executable for your OS.
 ### Deploy on an Ubuntu VPS (one command)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/refxfrank/claudeusage/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/refxfrank/Pulse-Usage-Monitor/main/install.sh | bash
 ```
 
 Installs Pulse as a systemd service bound to `127.0.0.1` (auto-restart, start on

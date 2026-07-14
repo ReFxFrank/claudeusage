@@ -2,7 +2,7 @@
 #
 # Pulse — one-command installer for an Ubuntu (systemd) VPS.
 #
-#   curl -fsSL https://raw.githubusercontent.com/refxfrank/claudeusage/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/refxfrank/Pulse-Usage-Monitor/main/install.sh | bash
 #
 # or, from a checkout:   ./install.sh
 #
@@ -17,7 +17,7 @@
 # Overridable via env: PULSE_REPO PULSE_BRANCH PULSE_DIR PULSE_PORT PULSE_HOST
 set -euo pipefail
 
-PULSE_REPO="${PULSE_REPO:-https://github.com/refxfrank/claudeusage.git}"
+PULSE_REPO="${PULSE_REPO:-https://github.com/refxfrank/Pulse-Usage-Monitor.git}"
 PULSE_BRANCH="${PULSE_BRANCH:-main}"
 PULSE_PORT="${PULSE_PORT:-4747}"
 PULSE_HOST="${PULSE_HOST:-127.0.0.1}"

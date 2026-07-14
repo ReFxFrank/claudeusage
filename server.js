@@ -1446,7 +1446,7 @@ function seaAsset(key) {
 // Any failure leaves the current install untouched and points at the
 // releases page instead. No usage data is ever transmitted.
 // ---------------------------------------------------------------------------
-const UPDATE_REPO = 'ReFxFrank/claudeusage';
+const UPDATE_REPO = 'ReFxFrank/Pulse-Usage-Monitor';
 const RELEASES_PAGE = 'https://github.com/' + UPDATE_REPO + '/releases';
 const UPDATE_API_URL = process.env.PULSE_UPDATE_API ||
   'https://api.github.com/repos/' + UPDATE_REPO + '/releases/latest';
