@@ -37,7 +37,7 @@ export function StopButton({ onStopped, compact = false, disabled = false }) {
 // The Server card: identity (version / uptime / mode), update check + install,
 // stop button, and a live tail of the server log — everything you would
 // otherwise need the console window for.
-export function ServerPanel({ data, onStopped, delay = 0.36 }) {
+export function ServerPanel({ data, onStopped, gfx, delay = 0.36 }) {
   const [busy, setBusy] = useState(null); // 'check' | 'install'
   const [note, setNote] = useState(null);
   const [showLogs, setShowLogs] = useState(true);
@@ -159,6 +159,15 @@ export function ServerPanel({ data, onStopped, delay = 0.36 }) {
         <button className="btn ghost" onClick={onToggleMeters} disabled={busy === 'meters'}>
           {busy === 'meters' ? 'Saving…' : (data.meters && data.meters.enabled ? 'Disable account meters' : 'Enable account meters')}
         </button>
+        {gfx && (
+          <button
+            className="btn ghost"
+            onClick={() => gfx.set(gfx.mode === 'auto' ? (gfx.lite ? 'rich' : 'lite') : gfx.mode === 'lite' ? 'rich' : 'auto')}
+            title="Lite mode removes blur effects and animations — use it when the browser runs without hardware acceleration."
+          >
+            Graphics: {gfx.mode === 'auto' ? `auto (${gfx.lite ? 'lite' : 'rich'})` : gfx.mode}
+          </button>
+        )}
         <button className="btn ghost" onClick={() => setShowLogs((s) => !s)}>
           {showLogs ? 'Hide logs' : 'Show logs'}
         </button>

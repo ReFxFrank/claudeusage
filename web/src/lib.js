@@ -147,6 +147,46 @@ export function useLogs(enabled, intervalMs = 10000) {
   return lines;
 }
 
+// ---- graphics performance mode ----
+// backdrop-filter blur + continuous animations are brutal without GPU
+// compositing: every repaint re-blurs on the CPU and can starve the whole
+// machine. Detect software rendering via the WebGL renderer string and fall
+// back to a "lite" look (solid cards, no blur, no tweens).
+export const perf = { lite: false };
+
+export function detectSoftwareRendering() {
+  try {
+    const c = document.createElement('canvas');
+    const gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+    if (!gl) return true; // no GL context at all → software paint path
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    const renderer = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '') : '';
+    return /swiftshader|llvmpipe|softpipe|software|basic render/i.test(renderer);
+  } catch (_) {
+    return true;
+  }
+}
+
+// mode: 'auto' (detect) | 'rich' | 'lite' — persisted.
+export function readGraphicsMode() {
+  try {
+    const m = localStorage.getItem('pulse-graphics');
+    return m === 'rich' || m === 'lite' ? m : 'auto';
+  } catch (_) { return 'auto'; }
+}
+
+export function effectiveLite(mode) {
+  return mode === 'lite' || (mode === 'auto' && detectSoftwareRendering());
+}
+
+export function applyGraphicsMode(mode) {
+  const lite = effectiveLite(mode);
+  perf.lite = lite;
+  try { document.documentElement.classList.toggle('lite', lite); } catch (_) {}
+  try { localStorage.setItem('pulse-graphics', mode); } catch (_) {}
+  return lite;
+}
+
 // Re-render helper that ticks every second (for live countdowns / relative time).
 export function useTick(ms = 1000) {
   const [, set] = useState(0);

@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.4.1
+
+- **Lite graphics mode — fixes heavy CPU use without hardware acceleration:**
+  the glassmorphism `backdrop-filter` blur re-renders on the CPU on every
+  repaint when the browser has no GPU compositing, which could peg a core and
+  lag other windows (worst around the chart, which repaints constantly).
+  Pulse now detects software rendering (SwiftShader/llvmpipe via the WebGL
+  renderer string) and switches to a solid-surface look automatically: no
+  blur, no entrance/hover animations, counters jump instead of tweening, and
+  the header pulse/grain effects are disabled. Override any time with the
+  **Graphics: auto/lite/rich** button in the Server panel (persisted).
+  Number tweens also pause in background tabs now.
+
 ## v1.4.0
 
 - **Official Codex meters (automatic):** the Account-limits card now also shows

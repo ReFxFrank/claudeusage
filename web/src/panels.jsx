@@ -3,7 +3,7 @@ import { motion, animate } from 'framer-motion';
 import * as Select from '@radix-ui/react-select';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { ProgressRing } from './charts.jsx';
-import { money2, tokens, num, pct, durClock, hm, ago, ACCENT } from './lib.js';
+import { money2, tokens, num, pct, durClock, hm, ago, ACCENT, perf } from './lib.js';
 
 const EASE = [0.2, 0.7, 0.2, 1];
 
@@ -31,7 +31,11 @@ export function AnimatedNumber({ value, format }) {
     const from = prev.current;
     const to = value ?? 0;
     prev.current = to;
-    if (from === to && ref.current) { ref.current.textContent = format(to); return; }
+    // Lite mode / background tab: no 60fps text tween — jump to the value.
+    if ((from === to || perf.lite || document.hidden) && ref.current) {
+      ref.current.textContent = format(to);
+      return;
+    }
     const controls = animate(from, to, {
       duration: 0.9,
       ease: EASE,

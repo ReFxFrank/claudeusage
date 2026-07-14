@@ -315,3 +315,22 @@ footer .reading { margin-top: 12px; font-family: var(--mono); font-size: 11.5px;
 @media (max-width: 760px) { .mrow { grid-template-columns: 110px 1fr 42px; } .mrow .mr { grid-column: 2 / -1; } }
 .mrow.stale { opacity: 0.55; }
 .mrow.stale .mtrack i { background: rgba(255, 255, 255, 0.18); }
+
+/* ---- lite graphics mode ----
+   Applied when the browser is software-rendering (no hardware acceleration)
+   or forced via the Server panel. backdrop-filter re-blurs on the CPU on
+   EVERY repaint under it — with 1s countdown ticks and animated counters
+   that pegged a core and starved other windows. Solid surfaces instead. */
+html.lite .card,
+html.lite .selContent,
+html.lite .rtip,
+html.lite .ctip {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+html.lite .card { background: #16141e; box-shadow: none; }
+html.lite .selContent { background: #171520; }
+html.lite .rtip, html.lite .ctip { background: #14121b; }
+html.lite .brand .dot { animation: none; box-shadow: none; }
+html.lite body::after { display: none; }   /* grain overlay */
+html.lite .mtrack i, html.lite .hbar .track i { transition: none; }

@@ -1,6 +1,9 @@
-import { useMemo, useState } from 'react';
-import { motion } from 'framer-motion';
-import { useSummary, makeColorMap, ACCENT, money2, tokens, num, clockTime, ago } from './lib.js';
+import { useEffect, useMemo, useState } from 'react';
+import { motion, MotionConfig } from 'framer-motion';
+import {
+  useSummary, makeColorMap, ACCENT, money2, tokens, num, clockTime, ago,
+  perf, readGraphicsMode, effectiveLite, applyGraphicsMode,
+} from './lib.js';
 import { SpendChart, Sparkline } from './charts.jsx';
 import {
   Card, CurrentBlock, BurnRate, Rollup, BarList, SessionsTable, PeriodSelect, Legend, InfoTip,
@@ -9,6 +12,17 @@ import { ServerPanel, StopButton } from './server-panel.jsx';
 import { MetersCard } from './meters.jsx';
 
 export default function App() {
+  // Graphics mode — 'auto' detects software rendering (no hardware accel) and
+  // switches to a blur/animation-free lite look so Pulse never hogs the CPU.
+  // Applied in the initializer so the very first paint is already correct.
+  const [gfxMode, setGfxMode] = useState(() => {
+    const m = readGraphicsMode();
+    applyGraphicsMode(m);
+    return m;
+  });
+  useEffect(() => { applyGraphicsMode(gfxMode); }, [gfxMode]);
+  const liteActive = effectiveLite(gfxMode);
+
   // Source filter — empty array means "all sources". Persisted locally.
   const [srcFilter, setSrcFilter] = useState(() => {
     try { return JSON.parse(localStorage.getItem('pulse-source-filter')) || []; } catch (_) { return []; }
@@ -108,10 +122,10 @@ export default function App() {
             </div>
           </div>
           {/* the background process must stay controllable even with no data */}
-          <ServerPanel data={data} onStopped={() => setStopped(true)} delay={0.2} />
+          <ServerPanel data={data} onStopped={() => setStopped(true)} gfx={{ mode: gfxMode, lite: liteActive, set: setGfxMode }} delay={0.2} />
         </>
       ) : (
-        <Dashboard data={data} colorMaps={colorMaps} periodKey={periodKey} setPeriodKey={setPeriodKey} onStopped={() => setStopped(true)} />
+        <Dashboard data={data} colorMaps={colorMaps} periodKey={periodKey} setPeriodKey={setPeriodKey} onStopped={() => setStopped(true)} gfx={{ mode: gfxMode, lite: liteActive, set: setGfxMode }} />
       )}
     </Shell>
   );
@@ -155,7 +169,7 @@ function SourceFilter({ allSources, active, colorMap, onChange }) {
   );
 }
 
-function Dashboard({ data, colorMaps, periodKey, setPeriodKey, onStopped }) {
+function Dashboard({ data, colorMaps, periodKey, setPeriodKey, onStopped, gfx }) {
   const periods = data.periods || [];
   let period = periods.find((p) => p.key === periodKey);
   if (!period) period = periods[0];
@@ -247,13 +261,14 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, onStopped }) {
         <SessionsTable sessions={data.recentSessions} />
       </Card>
 
-      <ServerPanel data={data} onStopped={onStopped} delay={0.36} />
+      <ServerPanel data={data} onStopped={onStopped} gfx={gfx} delay={0.36} />
     </>
   );
 }
 
 function Shell({ children, header, footer, version, codex }) {
   return (
+    <MotionConfig reducedMotion={perf.lite ? 'always' : 'never'}>
     <div className="wrap">
       <motion.header className="hdr" initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}>
         <div className="brand">
@@ -287,5 +302,6 @@ function Shell({ children, header, footer, version, codex }) {
         </footer>
       )}
     </div>
+    </MotionConfig>
   );
 }
