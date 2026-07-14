@@ -6,6 +6,7 @@ import {
   Card, CurrentBlock, BurnRate, Rollup, BarList, SessionsTable, PeriodSelect, Legend, InfoTip,
 } from './panels.jsx';
 import { ServerPanel, StopButton } from './server-panel.jsx';
+import { MetersCard } from './meters.jsx';
 
 export default function App() {
   // Source filter — empty array means "all sources". Persisted locally.
@@ -180,6 +181,8 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, onStopped }) {
         <Rollup label="Today" r={data.today} delay={0.1} />
         <Rollup label="Last 7 days" r={data.week} delay={0.15} />
       </div>
+
+      <MetersCard meters={data.meters} delay={0.18} />
 
       {period && (
         <>

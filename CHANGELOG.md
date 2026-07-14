@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.3.0
+
+- **Official account meters (opt-in):** a new card shows Anthropic's own
+  account-wide usage — 5-hour and weekly utilization with TRUE reset
+  countdowns — via the same endpoint as Claude Code's `/usage`. Because
+  Pro/Max limits are unified, the bars include claude.ai chats, browser-only
+  cloud sessions, and other devices that local logs can never show. Off by
+  default; toggle in the Server panel. The Claude OAuth token is read
+  read-only, never logged, and sent only to api.anthropic.com (at most once
+  a minute while the dashboard is open). Expired logins degrade to a
+  re-login hint — Pulse never writes credentials.
+
 ## v1.2.2
 
 - **Longer rolling windows:** the period dropdown now offers **Last 90 days**

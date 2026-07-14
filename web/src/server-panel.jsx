@@ -61,6 +61,18 @@ export function ServerPanel({ data, onStopped, delay = 0.36 }) {
     : upd.status === 'error' ? 'check failed'
     : '—';
 
+  async function onToggleMeters() {
+    setBusy('meters');
+    try {
+      const on = !(data.meters && data.meters.enabled);
+      await postJson('/api/meters/' + (on ? 'enable' : 'disable'));
+      setNote(on
+        ? 'Account meters enabled — the card appears at the top on the next refresh (~10s).'
+        : 'Account meters disabled.');
+    } catch (e) { setNote('Meters toggle failed: ' + e.message); }
+    setBusy(null);
+  }
+
   async function onCheck() {
     setBusy('check'); setNote(null);
     try {
@@ -144,9 +156,17 @@ export function ServerPanel({ data, onStopped, delay = 0.36 }) {
             </a>
           ))}
         <StopButton onStopped={onStopped} disabled={busy === 'install'} />
+        <button className="btn ghost" onClick={onToggleMeters} disabled={busy === 'meters'}>
+          {busy === 'meters' ? 'Saving…' : (data.meters && data.meters.enabled ? 'Disable account meters' : 'Enable account meters')}
+        </button>
         <button className="btn ghost" onClick={() => setShowLogs((s) => !s)}>
           {showLogs ? 'Hide logs' : 'Show logs'}
         </button>
+      </div>
+      <div className="sub" style={{ margin: '-4px 0 4px' }}>
+        <b style={{ color: 'var(--text-2)' }}>Account meters</b> (opt-in) show Anthropic’s official 5-hour/weekly
+        usage — including claude.ai chats and cloud sessions no local log can see. Uses your local Claude login
+        read-only; talks only to api.anthropic.com.
       </div>
       <div className="sub" style={{ margin: '-4px 0 12px' }}>
         Starting again is the exe: double-click <code>pulse.exe</code>, or run{' '}

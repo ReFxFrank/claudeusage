@@ -29,6 +29,10 @@ which sessions ran at which reasoning effort — all from the logs already on yo
 - 🟢 **OpenAI Codex support** — if you also use the [Codex CLI](https://github.com/openai/codex),
   Pulse ingests `~/.codex/sessions` automatically: `gpt-*` model rows, a `codex`
   source, session titles, reasoning-effort chips, and costs at OpenAI list prices.
+- 📡 **Official account meters (opt-in)** — Anthropic's own 5-hour/weekly
+  utilization with **true reset times**. Limits are unified, so these bars
+  include claude.ai chats, cloud sessions, and other devices — usage no local
+  log can see.
 - 🧠 **Reasoning-effort chips** — see which sessions ran at `low → max`, ultracode, or
   fast mode. Works **out of the box, retroactively**: Pulse reads your `/effort`
   commands straight from the session transcripts.
@@ -151,6 +155,29 @@ alongside Claude Code — nothing to configure:
 browser or mobile app writes no local logs (same as claude.ai) and cannot
 appear — no local dashboard can see it.
 
+## 📡 Account meters — regular chats included (opt-in)
+
+Local logs can never show claude.ai chats, browser-only cloud sessions, or other
+machines. But your Pro/Max limits are **unified** — everything drains the same
+5-hour and weekly windows — and Anthropic exposes that account-wide meter to
+Claude Code (`/usage`). Pulse can read the same gauge:
+
+- Enable it in the **Server panel** ("Enable account meters"). A card appears
+  showing each limit bucket (5-hour session, weekly, per-model weekly) as a
+  bar with the **official utilization %** and a live **true reset countdown** —
+  no more guessing when the window really flips.
+- **How it works / privacy:** Pulse reads your Claude Code OAuth token from
+  `~/.claude/.credentials.json` **read-only** (never logged, never shown, never
+  written) and calls `api.anthropic.com/api/oauth/usage` — Anthropic's own
+  endpoint — at most once a minute while the dashboard is open. Nothing else is
+  transmitted, ever. Off by default; one click to disable again
+  (`{"accountMeters": false}` in `~/.pulse/config.json`).
+- **Limits of the feature:** it's an aggregate gauge, not per-chat line items —
+  no per-conversation breakdown exists anywhere. If your login expires, Pulse
+  will say so and wait (it never refreshes tokens). On macOS, Claude Code may
+  keep credentials in the Keychain, which Pulse doesn't read. The endpoint is
+  internal to Anthropic and could change; the card degrades gracefully.
+
 ## 🧠 Reasoning-effort chips
 
 Claude Code never writes the effort level (`low`→`max`, ultracode) into its
@@ -225,11 +252,12 @@ amount you'll be charged. Verify current list prices at
 - Binds to `127.0.0.1` only — not reachable from the network.
 - Reads `~/.claude` **read-only**; never writes, moves, or deletes anything there.
   Pulse's own files (config, logs, effort sidecar) live in `~/.pulse`.
-- The **only** outbound request is the optional GitHub version check (plus the
-  release download if you click *Update now*, verified against its GitHub sha256
-  digest). **No usage data ever leaves your machine.** `--no-update-check` gives
-  you zero network calls; everything else works fully offline. No CDN, no fonts,
-  no analytics, no telemetry.
+- Outbound requests, exhaustively: (1) the GitHub version check (on by default,
+  `--no-update-check` disables; plus the sha256-verified release download if you
+  click *Update now*), and (2) the **opt-in** account-meters call to
+  `api.anthropic.com` described above (off by default). **No usage data ever
+  leaves your machine** in either case. With updates off and meters off, Pulse
+  makes zero network calls. No CDN, no fonts, no analytics, no telemetry.
 - Endpoints with side effects (stop, update) are POST-only, loopback-only,
   Host-header-checked, and require a custom header — web pages you visit cannot
   trigger them (CSRF/DNS-rebinding hardened; data reads are Host-checked too).

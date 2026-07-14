@@ -24,7 +24,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.2.2';
+const PULSE_VERSION = '1.3.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -87,6 +87,16 @@ function pulseHome() {
 function configFilePath() { return path.join(pulseHome(), 'config.json'); }
 function readConfig() {
   try { return JSON.parse(fs.readFileSync(configFilePath(), 'utf8')) || {}; } catch (_) { return {}; }
+}
+function writeConfig(patch) {
+  const next = { ...readConfig(), ...patch };
+  try {
+    fs.mkdirSync(pulseHome(), { recursive: true });
+    fs.writeFileSync(configFilePath(), JSON.stringify(next, null, 2) + '\n');
+  } catch (e) {
+    console.warn('[pulse] could not write config: ' + e.message);
+  }
+  return next;
 }
 
 function openLogFile() {
@@ -1402,6 +1412,7 @@ function buildSummary(sourceFilter) {
   payload.daemon = IS_DAEMON_CHILD;
   payload.packaged = !!seaApi;
   payload.update = updateState;
+  payload.meters = metersForPayload();
   return payload;
 }
 
@@ -1461,13 +1472,14 @@ function versionNum(v) {
 // https.
 function fetchUrl(u, opts, cb) {
   cb = once(cb); // error + end / timeout can otherwise both fire it
-  const { asStream = false, timeoutMs = 20000, redirects = 5 } = opts || {};
+  const { asStream = false, timeoutMs = 20000, redirects = 5, headers = null } = opts || {};
   let mod;
   try { mod = u.startsWith('https:') ? require('https') : http; } catch (e) { return cb(e); }
   const req = mod.get(u, {
     headers: {
       'User-Agent': 'pulse-usage-dashboard/' + PULSE_VERSION,
       'Accept': 'application/vnd.github+json, application/octet-stream, */*',
+      ...(headers || {}),
     },
     timeout: timeoutMs,
   }, (res) => {
@@ -1663,6 +1675,149 @@ function cleanupOldExecutable() {
     const dl = process.execPath + '.download';
     if (fs.existsSync(dl)) fs.unlinkSync(dl);
   } catch (_) { /* next start */ }
+}
+
+// ---------------------------------------------------------------------------
+// ACCOUNT METERS (opt-in) — Anthropic's OFFICIAL usage gauges.
+// Claude Pro/Max limits are unified: claude.ai chats, Claude Code, cloud
+// sessions and other machines all drain the same 5-hour and weekly windows.
+// The same endpoint Claude Code's /usage command reads —
+// GET api.anthropic.com/api/oauth/usage — reports that account-wide
+// utilization with TRUE reset times, covering usage no local log ever sees.
+//
+// Privacy contract (documented in README, enforced here):
+//   - OFF by default; enabled only via the dashboard toggle
+//     ({"accountMeters": true} in ~/.pulse/config.json).
+//   - The OAuth token is read from ~/.claude/.credentials.json READ-ONLY,
+//     never logged, never included in any payload, and sent ONLY to the
+//     meters endpoint. Pulse never refreshes tokens (that would mean writing
+//     credentials): an expired login shows "open Claude Code to re-login".
+//   - PULSE_METERS_API overrides the endpoint for tests (mock server).
+// The endpoint is internal/undocumented — parse defensively, degrade quietly.
+// ---------------------------------------------------------------------------
+const METERS_API_URL = process.env.PULSE_METERS_API || 'https://api.anthropic.com/api/oauth/usage';
+const METERS_CACHE_MS = 60 * 1000;
+
+const metersState = {
+  status: 'off',   // off | ok | no-login | expired | error
+  buckets: [],     // [{ key, label, pct, resetsAt }]
+  fetchedAt: null,
+  error: null,
+};
+let metersInFlight = false;
+
+function metersEnabled() {
+  return readConfig().accountMeters === true;
+}
+
+// Read the Claude Code OAuth access token. Returns { token, expiresAt } or
+// null. NEVER log or transmit the token anywhere except the meters endpoint.
+function readOauthToken() {
+  try {
+    const raw = fs.readFileSync(path.join(claudeDir(), '.credentials.json'), 'utf8');
+    const j = JSON.parse(raw);
+    const o = (j && j.claudeAiOauth) || j || {};
+    const token = o.accessToken;
+    if (typeof token !== 'string' || !token) return null;
+    return { token, expiresAt: typeof o.expiresAt === 'number' ? o.expiresAt : null };
+  } catch (_) {
+    return null; // no file (e.g. macOS Keychain storage) or unreadable
+  }
+}
+
+const METER_LABELS = {
+  five_hour: '5-hour session',
+  seven_day: 'weekly (all models)',
+  seven_day_overall: 'weekly (all models)',
+  seven_day_opus: 'weekly · Opus',
+  seven_day_sonnet: 'weekly · Sonnet',
+  seven_day_oauth_apps: 'weekly · apps',
+};
+
+// Normalize one usage bucket from the API response. utilization has been seen
+// both as a 0–1 fraction and a 0–100 percent across versions; values ≤ 1 are
+// treated as fractions (a true 0.x% reads the same either way at the bar).
+function parseMeterBucket(key, v) {
+  if (!v || typeof v !== 'object') return null;
+  let u = v.utilization;
+  if (typeof u !== 'number' || !isFinite(u)) return null;
+  const pct = u <= 1 ? u * 100 : u;
+  let resetsAt = null;
+  if (v.resets_at) {
+    const t = typeof v.resets_at === 'number' ? v.resets_at * (v.resets_at < 1e12 ? 1000 : 1) : Date.parse(v.resets_at);
+    if (isFinite(t)) resetsAt = t;
+  }
+  return { key, label: METER_LABELS[key] || key.replace(/_/g, ' '), pct: Math.max(0, Math.min(100, pct)), resetsAt };
+}
+
+function refreshAccountMeters(done) {
+  if (!metersEnabled()) { metersState.status = 'off'; return done && done(metersState); }
+  if (metersInFlight) return done && done(metersState);
+  const cred = readOauthToken();
+  if (!cred) {
+    metersState.status = 'no-login';
+    metersState.error = 'No Claude Code login found on this machine (on macOS the token may live in the Keychain, which Pulse does not read).';
+    return done && done(metersState);
+  }
+  if (cred.expiresAt && cred.expiresAt < Date.now()) {
+    metersState.status = 'expired';
+    metersState.error = 'Claude login expired — open Claude Code once to refresh it (Pulse never writes credentials).';
+    return done && done(metersState);
+  }
+  metersInFlight = true;
+  fetchUrl(METERS_API_URL, {
+    timeoutMs: 8000,
+    headers: {
+      'Authorization': 'Bearer ' + cred.token,
+      'Content-Type': 'application/json',
+      'anthropic-beta': 'oauth-2025-04-20',
+    },
+  }, (err, body) => {
+    metersInFlight = false;
+    metersState.fetchedAt = Date.now();
+    if (err) {
+      metersState.status = /HTTP 401|HTTP 403/.test(err.message) ? 'expired' : 'error';
+      metersState.error = metersState.status === 'expired'
+        ? 'Claude rejected the login (' + err.message + ') — open Claude Code once to refresh it.'
+        : 'meters fetch failed: ' + err.message;
+      console.warn('[pulse] account meters: ' + metersState.error);
+      return done && done(metersState);
+    }
+    let j = null;
+    try { j = JSON.parse(body); } catch (_) {}
+    if (!j || typeof j !== 'object') {
+      metersState.status = 'error';
+      metersState.error = 'unexpected meters response';
+      return done && done(metersState);
+    }
+    const buckets = [];
+    for (const key of Object.keys(j)) {
+      const b = parseMeterBucket(key, j[key]);
+      if (b) buckets.push(b);
+    }
+    // Stable, meaningful order: 5h first, then weekly buckets.
+    buckets.sort((a, b) => (a.key === 'five_hour' ? -1 : b.key === 'five_hour' ? 1 : a.key.localeCompare(b.key)));
+    metersState.buckets = buckets;
+    metersState.status = 'ok';
+    metersState.error = buckets.length ? null : 'no usage buckets in response';
+    console.log(`[pulse] account meters refreshed (${buckets.length} bucket(s))`);
+    done && done(metersState);
+  });
+}
+
+// Lazily refresh on summary builds; serve the cached state immediately.
+function metersForPayload() {
+  if (!metersEnabled()) return { enabled: false };
+  if (!metersState.fetchedAt || Date.now() - metersState.fetchedAt > METERS_CACHE_MS) {
+    refreshAccountMeters(); // async; next 10s poll picks it up
+  }
+  return {
+    enabled: true,
+    status: metersState.status === 'off' ? 'loading' : metersState.status,
+    buckets: metersState.buckets,
+    fetchedAt: metersState.fetchedAt,
+    error: metersState.error,
+  };
 }
 
 // The built React frontend (Vite output). Served as static files; the server
@@ -1869,6 +2024,27 @@ function startServer(port, host, opts) {
           try { server.close(() => process.exit(0)); } catch (_) {}
           setTimeout(() => process.exit(0), 1000);
         }, 200);
+        return;
+      }
+      if (route === '/api/meters/enable' || route === '/api/meters/disable') {
+        if (!allowMutation(req, res)) return;
+        const on = route.endsWith('enable');
+        writeConfig({ accountMeters: on });
+        console.log('[pulse] account meters ' + (on ? 'enabled' : 'disabled') + ' from the dashboard');
+        if (!on) {
+          metersState.status = 'off';
+          metersState.buckets = [];
+          metersState.error = null;
+          metersState.fetchedAt = null;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, meters: { enabled: false } }));
+          return;
+        }
+        // Respond after the first fetch so the card can render immediately.
+        refreshAccountMeters(() => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, meters: metersForPayload() }));
+        });
         return;
       }
       if (route === '/api/update/check') {
