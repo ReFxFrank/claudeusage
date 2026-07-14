@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.3.1
+
+- **Account meters no longer trust the local expiry stamp:** Pulse attempts the
+  usage call regardless of the token file's `expiresAt` (odd units, clock skew
+  or out-of-band refreshes must never brick the card) and reports "expired"
+  only on a real 401/403 — with guidance to start a Claude Code **CLI** session
+  (`claude` in a terminal), since the desktop app keeps its own login and may
+  not refresh `~/.claude/.credentials.json`. Seconds-unit expiry stamps are
+  now normalized too.
+
 ## v1.3.0
 
 - **Official account meters (opt-in):** a new card shows Anthropic's own

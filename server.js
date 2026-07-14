@@ -24,7 +24,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.3.0';
+const PULSE_VERSION = '1.3.1';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -1719,7 +1719,9 @@ function readOauthToken() {
     const o = (j && j.claudeAiOauth) || j || {};
     const token = o.accessToken;
     if (typeof token !== 'string' || !token) return null;
-    return { token, expiresAt: typeof o.expiresAt === 'number' ? o.expiresAt : null };
+    let expiresAt = typeof o.expiresAt === 'number' && isFinite(o.expiresAt) ? o.expiresAt : null;
+    if (expiresAt && expiresAt < 1e12) expiresAt *= 1000; // tolerate seconds-unit stamps
+    return { token, expiresAt };
   } catch (_) {
     return null; // no file (e.g. macOS Keychain storage) or unreadable
   }
@@ -1759,11 +1761,11 @@ function refreshAccountMeters(done) {
     metersState.error = 'No Claude Code login found on this machine (on macOS the token may live in the Keychain, which Pulse does not read).';
     return done && done(metersState);
   }
-  if (cred.expiresAt && cred.expiresAt < Date.now()) {
-    metersState.status = 'expired';
-    metersState.error = 'Claude login expired — open Claude Code once to refresh it (Pulse never writes credentials).';
-    return done && done(metersState);
-  }
+  // NOTE: even if the file's expiresAt looks past, ATTEMPT the request — the
+  // API is the source of truth for token validity. A local timestamp (odd
+  // units, clock skew, refreshed-out-of-band tokens) must never brick the
+  // card; only a real 401/403 means expired.
+  const looksExpired = !!(cred.expiresAt && cred.expiresAt < Date.now());
   metersInFlight = true;
   fetchUrl(METERS_API_URL, {
     timeoutMs: 8000,
@@ -1778,7 +1780,11 @@ function refreshAccountMeters(done) {
     if (err) {
       metersState.status = /HTTP 401|HTTP 403/.test(err.message) ? 'expired' : 'error';
       metersState.error = metersState.status === 'expired'
-        ? 'Claude rejected the login (' + err.message + ') — open Claude Code once to refresh it.'
+        ? 'Claude rejected the login (' + err.message + ')' +
+          (looksExpired ? ' — the token file is stale. ' : ' — ') +
+          'Start a Claude Code CLI session on this machine (run `claude` in a terminal) to refresh ' +
+          '~/.claude/.credentials.json; the desktop app keeps its own login and may not update that file. ' +
+          'Pulse never writes credentials.'
         : 'meters fetch failed: ' + err.message;
       console.warn('[pulse] account meters: ' + metersState.error);
       return done && done(metersState);
