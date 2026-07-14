@@ -180,7 +180,7 @@ export function SpeedBadges({ speeds, align = 'flex-end' }) {
 // effort chips — reasoning effort captured by Pulse's optional hook logging
 // (node server.js --effort-setup). `efforts` is a {level: count} map or an
 // array of level names; `ultracode` adds the ULTRA chip.
-const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'];
+const EFFORT_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 export function EffortBadges({ efforts, ultracode, align = 'flex-end' }) {
   let names;
   if (Array.isArray(efforts)) names = efforts.slice();

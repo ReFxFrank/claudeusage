@@ -146,17 +146,28 @@ svg { display: block; }
 /* speed / mode chips (the only runtime mode Claude Code records) */
 .spd { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
 .spdb { font-family: var(--mono); font-size: 10px; line-height: 1; padding: 3px 7px; border-radius: 6px; background: rgba(255, 255, 255, 0.05); color: var(--text-3); border: 1px solid var(--stroke); white-space: nowrap; }
-.spdb.hot { color: var(--accent-3); background: rgba(155, 140, 255, 0.15); border-color: rgba(155, 140, 255, 0.32); }
+/* fast mode — cyan, its own thing */
+.spdb.hot { color: #6fd3e7; background: rgba(74, 197, 228, 0.12); border-color: rgba(74, 197, 228, 0.3); }
 
-/* effort levels — intensity rises with the level */
-.spdb.e-low    { color: var(--text-3); }
-.spdb.e-medium { color: var(--text-2); }
-.spdb.e-high   { color: #7fb3f7; background: rgba(74, 155, 245, 0.10); border-color: rgba(74, 155, 245, 0.28); }
-.spdb.e-xhigh  { color: var(--accent-3); background: rgba(155, 140, 255, 0.14); border-color: rgba(155, 140, 255, 0.34); }
-.spdb.e-max    { color: #edc078; background: rgba(224, 161, 50, 0.12); border-color: rgba(224, 161, 50, 0.35); }
+/* effort levels — one heat ramp for BOTH providers, every level distinct:
+   minimal → low(teal) → medium(blue) → high(violet) → xhigh(amber) → max(red),
+   plus two signature gradients: Claude's ultracode (warm) and Codex's ultra
+   (cool, green→violet). */
+.spdb.e-minimal { color: var(--text-3); border-style: dashed; }
+.spdb.e-low    { color: #8fd0c2; background: rgba(34, 184, 146, 0.09); border-color: rgba(34, 184, 146, 0.26); }
+.spdb.e-medium { color: #7fb3f7; background: rgba(74, 155, 245, 0.10); border-color: rgba(74, 155, 245, 0.28); }
+.spdb.e-high   { color: var(--accent-3); background: rgba(155, 140, 255, 0.14); border-color: rgba(155, 140, 255, 0.34); }
+.spdb.e-xhigh  { color: #edc078; background: rgba(224, 161, 50, 0.13); border-color: rgba(224, 161, 50, 0.36); }
+.spdb.e-max    { color: #f79a9a; background: rgba(242, 120, 120, 0.13); border-color: rgba(242, 120, 120, 0.38); font-weight: 600; }
+/* Claude · ultracode — the warm signature */
 .spdb.ultra {
   color: #fff; border: none; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
   background: linear-gradient(120deg, #8f7ff5, #d55fa2 55%, #e0a132);
+}
+/* Codex · ultra — equally premium, unmistakably its own (cool spectrum) */
+.spdb.e-ultra {
+  color: #fff; border: none; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  background: linear-gradient(120deg, #14a380, #4a9bf5 55%, #8f7ff5);
 }
 .hbar .nm { color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 8px; }
 .hbar .nm i { width: 9px; height: 9px; border-radius: 3px; flex: none; }

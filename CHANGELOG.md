@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.4.2
+
+- **Effort chips redesigned — every level unique:** one heat ramp across both
+  providers (minimal · dashed → low · teal → medium · blue → high · violet →
+  xhigh · amber → max · red) plus two signature gradients: Claude's ultracode
+  keeps its warm violet→pink→amber ULTRA, and Codex's ultra gets an equally
+  premium cool green→blue→violet ULTRA. The fast chip moves to its own cyan.
+  Sort order now covers minimal and ultra.
+
 ## v1.4.1
 
 - **Lite graphics mode — fixes heavy CPU use without hardware acceleration:**
