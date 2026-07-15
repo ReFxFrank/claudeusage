@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.5.2
+
+- **Per-model weekly meters (Fable & friends):** newer accounts report
+  model-scoped weekly windows — the "Weekly · Fable" row in Claude Code's
+  `/usage` panel — in a `limits[]` array instead of dedicated `seven_day_*`
+  keys, so Pulse never showed them. The Account-limits card now renders every
+  model-scoped weekly window the API emits ("Claude · weekly · Fable", …),
+  deduplicated against the legacy keys, ordered 5-hour → overall weekly →
+  scoped windows.
+
 ## v1.5.1
 
 - **Codex meters no longer vanish at 100%:** when a window hits its limit,

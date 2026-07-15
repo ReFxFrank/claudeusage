@@ -24,7 +24,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.5.1';
+const PULSE_VERSION = '1.5.2';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -1982,8 +1982,31 @@ function refreshAccountMeters(done) {
       const b = parseMeterBucket(key, j[key]);
       if (b) buckets.push(b);
     }
-    // Stable, meaningful order: 5h first, then weekly buckets.
-    buckets.sort((a, b) => (a.key === 'five_hour' ? -1 : b.key === 'five_hour' ? 1 : a.key.localeCompare(b.key)));
+    // Newer accounts report per-model weekly windows (the /usage panel's
+    // "Weekly · Fable" row) in a limits[] array — kind "weekly_scoped" with
+    // scope.model.display_name — not as dedicated seven_day_* keys.
+    if (Array.isArray(j.limits)) {
+      for (const lim of j.limits) {
+        if (!lim || typeof lim !== 'object' || lim.kind !== 'weekly_scoped') continue;
+        const name = lim.scope && lim.scope.model && typeof lim.scope.model.display_name === 'string'
+          ? lim.scope.model.display_name.trim() : '';
+        if (!name || typeof lim.percent !== 'number' || !isFinite(lim.percent)) continue;
+        const pct = lim.percent <= 1 ? lim.percent * 100 : lim.percent;
+        let resetsAt = null;
+        if (lim.resets_at) {
+          const t = typeof lim.resets_at === 'number'
+            ? lim.resets_at * (lim.resets_at < 1e12 ? 1000 : 1) : Date.parse(lim.resets_at);
+          if (isFinite(t)) resetsAt = t;
+        }
+        const label = 'Claude · weekly · ' + name;
+        // Skip if a legacy key already produced this row (e.g. seven_day_opus).
+        if (buckets.some((b) => b.label.toLowerCase() === label.toLowerCase())) continue;
+        buckets.push({ key: 'model_scoped:' + name.toLowerCase(), label, pct: Math.max(0, Math.min(100, pct)), resetsAt });
+      }
+    }
+    // Stable, meaningful order: 5h, then overall weekly, then scoped windows.
+    const rank = (k) => (k === 'five_hour' ? 0 : k === 'seven_day' || k === 'seven_day_overall' ? 1 : 2);
+    buckets.sort((a, b) => rank(a.key) - rank(b.key) || a.key.localeCompare(b.key));
     metersState.buckets = buckets;
     metersState.status = 'ok';
     metersState.lastGoodAt = Date.now();
