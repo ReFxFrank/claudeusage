@@ -206,8 +206,8 @@ export function ServerPanel({ data, onStopped, gfx, delay = 0.36 }) {
       <div className="sub" style={{ margin: '-4px 0 4px' }}>
         <b style={{ color: 'var(--text-2)' }}>Discord presence</b> (opt-in) shows your live usage — today’s and
         all-time tokens/spend — as an activity on your Discord profile, via the desktop app’s local socket
-        (nothing sent over the network by Pulse). It’s public to anyone who can see your profile. Needs a free
-        Discord application ID in <code>~/.pulse/config.json</code> (<code>discordClientId</code>).
+        (nothing sent over the network by Pulse). Works out of the box: just flip it on with Discord running.
+        It’s public to anyone who can see your profile.
       </div>
       <div className="sub" style={{ margin: '-4px 0 12px' }}>
         Starting again is the exe: double-click <code>pulse.exe</code>, or run{' '}

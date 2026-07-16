@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.7.0';
+const PULSE_VERSION = '1.7.1';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -2289,7 +2289,10 @@ function codexUsageForPayload() {
 // Requires a Discord Application ID (free, discord.com/developers) in
 // config discordClientId — client IDs are public identifiers, not secrets.
 // ---------------------------------------------------------------------------
-const DISCORD_CLIENT_ID_DEFAULT = ''; // repo owner: paste the Pulse app ID here
+// The official Pulse application (registered by the repo owner). Client IDs
+// are public identifiers — every rich-presence tool ships one. Override with
+// config discordClientId / env PULSE_DISCORD_CLIENT_ID to use your own app.
+const DISCORD_CLIENT_ID_DEFAULT = '1527236432375189535';
 const DISCORD_TICK_MS = parseInt(process.env.PULSE_DISCORD_TICK_MS, 10) || 15 * 1000;
 const DISCORD_RETRY_MS = 30 * 1000;
 const PULSE_REPO_URL = 'https://github.com/ReFxFrank/Pulse-Usage-Monitor';

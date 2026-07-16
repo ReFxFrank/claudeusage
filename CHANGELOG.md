@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.7.1
+
+- **Discord presence now works out of the box:** Pulse ships with the official
+  Pulse Discord application ID built in, so enabling Rich Presence is a single
+  click in the Server panel — no registration, no config. (Application IDs are
+  public identifiers; every rich-presence tool ships one.) Your own app can
+  still be used instead via `discordClientId` in `~/.pulse/config.json`.
+
 ## v1.7.0
 
 - **Discord Rich Presence (opt-in):** show your usage as a Discord activity —

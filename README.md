@@ -204,16 +204,13 @@ Claude Code (`/usage`). Pulse can read the same gauge:
 
 Show Pulse as a Discord activity — "Today 1.2M tokens · $4.20" / "All-time
 812M tokens · $904 · 61 sessions", with live window meters in the hover text
-and a **Get Pulse** button:
+and a **Get Pulse** button.
 
-1. Create a (free) Discord application at
-   [discord.com/developers/applications](https://discord.com/developers/applications) —
-   name it **Pulse** (the activity shows "Playing Pulse"). Optionally upload an
-   icon under *Rich Presence → Art Assets* with the key `pulse`.
-2. Put the **Application ID** in `~/.pulse/config.json`:
-   `{"discordClientId": "1234567890123456789"}` (it's a public identifier, not
-   a secret).
-3. Click **Discord presence: off → on** in the Server panel.
+**Zero setup:** click **Discord presence: off → on** in the Server panel while
+the Discord desktop app is running. Pulse ships with the official Pulse
+application ID built in (a public identifier — every rich-presence tool works
+this way). To present as your own Discord application instead, set
+`{"discordClientId": "…"}` in `~/.pulse/config.json`.
 
 How it works / privacy: Pulse speaks the Discord **desktop client's local IPC
 socket** directly (named pipe on Windows) — the same mechanism as every
