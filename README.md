@@ -224,6 +224,14 @@ application ID built in (a public identifier — every rich-presence tool works
 this way). To present as your own Discord application instead, set
 `{"discordClientId": "…"}` in `~/.pulse/config.json`.
 
+**Logo tracks what you're using:** the large image switches to Claude's logo
+while you're actively using Claude Code, Codex's while you're on Codex, and the
+Pulse logo when idle. Upload the images once under your Discord application's
+**Rich Presence → Art Assets** with the keys `claude`, `codex`, and `pulse`
+(each key is overridable via `discordClaudeImage` / `discordCodexImage` /
+`discordLargeImage` in config). A missing key simply shows no image, so it
+degrades cleanly if you only upload some.
+
 How it works / privacy: Pulse speaks the Discord **desktop client's local IPC
 socket** directly (named pipe on Windows) — the same mechanism as every
 rich-presence tool, but with no SDK and no network traffic from Pulse; the

@@ -18,8 +18,9 @@ node -e '
 const fs = require("fs"); const now = Date.now();
 const iso = (m) => new Date(now - m * 60e3).toISOString();
 const lines = [
-  { type: "user", timestamp: iso(30), sessionId: "s1", cwd: "/p", message: { role: "user", content: "hello" } },
-  { type: "assistant", timestamp: iso(29), sessionId: "s1", requestId: "r1", cwd: "/p",
+  // recent (within the 15-min active window) so the active provider is Claude
+  { type: "user", timestamp: iso(6), sessionId: "s1", cwd: "/p", message: { role: "user", content: "hello" } },
+  { type: "assistant", timestamp: iso(5), sessionId: "s1", requestId: "r1", cwd: "/p",
     message: { id: "m1", model: "claude-fable-5", usage: { input_tokens: 500000, output_tokens: 250000 } } },
 ];
 fs.writeFileSync(process.argv[1] + "/projects/demo/s.jsonl", lines.map(JSON.stringify).join("\n") + "\n");
@@ -87,6 +88,10 @@ ok(act && act.buttons && act.buttons[0].url.includes("github.com/ReFxFrank"), "A
 ok(act && act.timestamps && act.timestamps.start > 0, "A: elapsed timestamp (continuous across pages)");
 const A = require(SP + "/a.json").discord;
 ok(A && A.enabled && A.status === "ok", "A: payload.discord.status ok (" + (A && A.status) + ")");
+// provider logo: recent Claude activity -> claude art + "Using Claude Code"
+ok(require(SP + "/a.json").activeProvider === "claude", "A: activeProvider = claude (recent Claude entry)");
+ok(act && act.assets && act.assets.large_image === "claude" && act.assets.large_text === "Using Claude Code",
+   "A: large logo tracks provider (img=" + (act && act.assets && act.assets.large_image) + ", text=" + (act && act.assets && act.assets.large_text) + ")");
 
 const clear = acts.find((f) => f.payload.args.activity === null);
 ok(!!clear, "B: disable sent SET_ACTIVITY(null) to clear presence");

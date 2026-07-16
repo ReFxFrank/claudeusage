@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.10.0';
+const PULSE_VERSION = '1.10.1';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -1295,9 +1295,18 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
     }
   }
 
+  // Which provider is in active use right now — the newest activity within the
+  // last 15 minutes — for the Discord presence logo. null == idle.
+  const ACTIVE_MS = 15 * 60 * 1000;
+  let activeProvider = null;
+  if (asc.length && now - asc[asc.length - 1].ts <= ACTIVE_MS) {
+    activeProvider = asc[asc.length - 1].source === 'codex' ? 'codex' : 'claude';
+  }
+
   const payload = {
     generatedAt: now,
     latestTs: asc.length ? asc[asc.length - 1].ts : null, // newest record on this machine
+    activeProvider, // 'claude' | 'codex' | null (idle)
     totals,
     currentBlock,
     idle: activeBlock === null,
@@ -2748,12 +2757,25 @@ function buildDiscordActivity() {
   ];
   const p = pages[Math.floor(Date.now() / discordRotateMs()) % pages.length];
   const details = p.label + ': ' + fmtTok(p.tokens) + ' tokens · ' + fmtMoney(p.cost);
+  // The large logo tracks who you're actively using: Claude → the Claude art,
+  // Codex → the Codex art, idle → Pulse. Asset keys must exist in the Discord
+  // application's Rich Presence art (upload images keyed claude / codex / pulse);
+  // an unknown key just renders no image, so this degrades cleanly. Each key is
+  // overridable in config (discordClaudeImage / discordCodexImage / discordLargeImage).
+  const cfg = readConfig();
+  const prov = s.activeProvider;
+  const asset = prov === 'codex' ? (cfg.discordCodexImage || 'codex')
+    : prov === 'claude' ? (cfg.discordClaudeImage || 'claude')
+    : (cfg.discordLargeImage || 'pulse');
+  const assetText = prov === 'codex' ? 'Using OpenAI Codex'
+    : prov === 'claude' ? 'Using Claude Code'
+    : 'Pulse — idle';
   return {
     details: details.slice(0, 128),
     timestamps: { start: SERVER_START }, // elapsed stays continuous across pages
     assets: {
-      large_image: readConfig().discordLargeImage || 'pulse',
-      large_text: 'Pulse — local Claude/Codex usage dashboard',
+      large_image: asset,
+      large_text: assetText,
     },
     buttons: [{ label: 'Get Pulse', url: PULSE_REPO_URL }],
     instance: false,

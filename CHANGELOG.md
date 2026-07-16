@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.10.1
+
+- **Discord logo follows what you're using:** the large presence image now
+  switches to Claude's logo while you're actively using Claude Code, Codex's
+  while you're on Codex, and the Pulse logo when idle (no activity in the last
+  15 minutes). Upload art keyed `claude` / `codex` / `pulse` under your Discord
+  app's Rich Presence assets (overridable via `discordClaudeImage` /
+  `discordCodexImage` / `discordLargeImage`); a missing key just shows no image.
+  The summary payload gains `activeProvider` (`claude` | `codex` | null).
+
 ## v1.10.0
 
 - **Spend by effort and by project:** the spend section gains two breakdowns
