@@ -1578,7 +1578,13 @@ function fetchUrl(u, opts, cb) {
   const { asStream = false, timeoutMs = 20000, redirects = 5, headers = null } = opts || {};
   let mod;
   try { mod = u.startsWith('https:') ? require('https') : http; } catch (e) { return cb(e); }
-  const req = mod.get(u, {
+  // mod.get can throw SYNCHRONOUSLY (bad URL, header values with invalid
+  // characters → ERR_INVALID_CHAR). Route that to the callback like any other
+  // fetch error — a corrupt credentials file must never 500 the caller or
+  // strand its in-flight flag.
+  let req;
+  try {
+  req = mod.get(u, {
     headers: {
       'User-Agent': 'pulse-usage-dashboard/' + PULSE_VERSION,
       'Accept': 'application/vnd.github+json, application/octet-stream, */*',
@@ -1607,6 +1613,7 @@ function fetchUrl(u, opts, cb) {
     res.on('end', () => cb(null, body));
     res.on('error', (e) => cb(e));
   });
+  } catch (e) { return cb(e); }
   req.on('timeout', () => req.destroy(new Error('timed out')));
   req.on('error', (e) => cb(e));
 }
@@ -1946,6 +1953,8 @@ function refreshAccountMeters(done) {
     },
   }, (err, body) => {
     metersInFlight = false;
+    // Disabled while the request was in flight: don't resurrect cleared state.
+    if (!metersEnabled()) { metersState.status = 'off'; return done && done(metersState); }
     metersState.fetchedAt = Date.now();
     if (err) {
       if (err.status === 429) {
@@ -2071,12 +2080,19 @@ let codexUsage429Streak = 0;
 
 // ~/.codex/auth.json → { token, accountId } or null. An API-key-only login
 // (no ChatGPT tokens) can't call the account endpoint — treated as no-login.
+// Values go into HTTP headers, so anything with header-invalid characters
+// (a corrupt or hand-edited file) is rejected here rather than allowed to
+// blow up the request.
+const HEADER_SAFE = /^[\x21-\x7e]+$/; // printable ASCII, no whitespace/CTLs
 function readCodexAuth() {
   try {
     const j = JSON.parse(fs.readFileSync(path.join(codexDir(), 'auth.json'), 'utf8'));
     const t = j && j.tokens;
-    if (t && typeof t.access_token === 'string' && t.access_token) {
-      return { token: t.access_token, accountId: typeof t.account_id === 'string' ? t.account_id : null };
+    if (t && typeof t.access_token === 'string' && HEADER_SAFE.test(t.access_token)) {
+      return {
+        token: t.access_token,
+        accountId: typeof t.account_id === 'string' && HEADER_SAFE.test(t.account_id) ? t.account_id : null,
+      };
     }
   } catch (_) { /* missing/unreadable → no-login */ }
   return null;
@@ -2086,14 +2102,19 @@ function readCodexAuth() {
 // aggregates (today / last 7 / last 30 days) are computed here so the UI
 // stays dumb. Bucket dates are YYYY-MM-DD (UTC day keys).
 function normalizeCodexUsage(j) {
-  const s = j && typeof j === 'object' ? (j.stats && typeof j.stats === 'object' ? j.stats : j) : null;
-  if (!s) return null;
+  if (!j || typeof j !== 'object') return null;
+  const hasStats = j.stats && typeof j.stats === 'object';
+  const s = hasStats ? j.stats : j;
   const n = (v) => (typeof v === 'number' && isFinite(v) ? v : null);
   const buckets = [];
   if (Array.isArray(s.daily_usage_buckets)) {
     for (const b of s.daily_usage_buckets) {
       if (!b || typeof b.start_date !== 'string' || typeof b.tokens !== 'number' || !isFinite(b.tokens)) continue;
-      buckets.push({ date: b.start_date.slice(0, 10), tokens: b.tokens });
+      const date = b.start_date.slice(0, 10);
+      // Aggregates compare dates lexicographically — a malformed string
+      // (e.g. "N/A") would sort past every cutoff and pollute the sums.
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+      buckets.push({ date, tokens: b.tokens });
     }
     buckets.sort((a, b) => a.date.localeCompare(b.date));
   }
@@ -2107,8 +2128,12 @@ function normalizeCodexUsage(j) {
     if (b.date >= cutoff7) last7 += b.tokens;
     if (b.date >= cutoff30) last30 += b.tokens;
   }
+  // A response with a stats object is valid even when every field is absent
+  // or zero (brand-new account) — that's "ok, zero usage", not an error.
+  // Only a shape with no stats object AND no recognizable fields at the root
+  // is genuinely unexpected.
   const hasSignal = buckets.length > 0 || n(s.lifetime_tokens) != null || n(s.peak_daily_tokens) != null;
-  if (!hasSignal) return null;
+  if (!hasStats && !hasSignal) return null;
   return {
     lifetimeTokens: n(s.lifetime_tokens),
     peakDailyTokens: n(s.peak_daily_tokens),
@@ -2118,8 +2143,16 @@ function normalizeCodexUsage(j) {
   };
 }
 
+// Separate consent from the Claude meters: users who opted in before v1.6.0
+// consented to api.anthropic.com only. The dashboard's enable button (a fresh
+// gesture, with copy naming both endpoints) sets BOTH keys; a pre-existing
+// {accountMeters: true} alone keeps the ChatGPT call off until re-toggled.
+function codexUsageEnabled() {
+  return readConfig().codexAccountUsage === true;
+}
+
 function refreshCodexUsage(done) {
-  if (!metersEnabled()) { codexUsageState.status = 'off'; return done && done(codexUsageState); }
+  if (!codexUsageEnabled()) { codexUsageState.status = 'off'; return done && done(codexUsageState); }
   if (codexUsageInFlight) return done && done(codexUsageState);
   codexUsageInFlight = true;
   const schedule = (ms) => { codexUsageState.nextAttemptAt = Date.now() + ms; };
@@ -2140,6 +2173,9 @@ function refreshCodexUsage(done) {
   if (auth.accountId) headers['ChatGPT-Account-Id'] = auth.accountId;
   fetchUrl(CODEX_USAGE_API_URL, { timeoutMs: 8000, headers }, (err, body) => {
     codexUsageInFlight = false;
+    // Disabled while the request was in flight: the off-handler already
+    // cleared the state — don't resurrect it with a stale write.
+    if (!codexUsageEnabled()) { codexUsageState.status = 'off'; return done && done(codexUsageState); }
     codexUsageState.fetchedAt = Date.now();
     if (err) {
       if (err.status === 429) {
@@ -2193,7 +2229,7 @@ function refreshCodexUsage(done) {
 
 // Lazily refresh on summary builds; serve the cached state immediately.
 function codexUsageForPayload() {
-  if (!metersEnabled()) return { enabled: false };
+  if (!codexUsageEnabled()) return { enabled: false };
   if (Date.now() >= (codexUsageState.nextAttemptAt || 0)) {
     refreshCodexUsage(); // async; next poll picks it up
   }
@@ -2432,7 +2468,10 @@ function startServer(port, host, opts) {
       if (route === '/api/meters/enable' || route === '/api/meters/disable') {
         if (!allowMutation(req, res)) return;
         const on = route.endsWith('enable');
-        writeConfig({ accountMeters: on });
+        // One dashboard gesture covers both providers — the button copy names
+        // both endpoints. Pre-1.6.0 configs with accountMeters alone never
+        // gain the ChatGPT call until the user re-toggles here.
+        writeConfig({ accountMeters: on, codexAccountUsage: on });
         console.log('[pulse] account meters ' + (on ? 'enabled' : 'disabled') + ' from the dashboard');
         if (!on) {
           metersState.status = 'off';

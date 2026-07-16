@@ -9,7 +9,17 @@
   this machine's logs. Uses the ChatGPT login Codex already stores in
   `~/.codex/auth.json` (read-only, never logged, sent only to chatgpt.com),
   behind the same Account-meters switch as the Claude meters, polled once
-  per 10 minutes with 429 backoff and expired-login handling.
+  per 10 minutes with 429 backoff and expired-login handling. Consent stays
+  explicit: the dashboard toggle enables both providers going forward, but a
+  pre-existing meters opt-in (which named only api.anthropic.com) does NOT
+  silently start the ChatGPT call — re-toggle once to add it.
+- **Hardening (from an adversarial review of this feature):** a corrupted
+  `~/.codex/auth.json` with header-invalid characters can no longer 500 the
+  dashboard or wedge the fetch guard (sync throws inside fetches now route
+  to the normal error path — this also hardens every other outbound call);
+  malformed daily-bucket dates are dropped instead of polluting the 7/30-day
+  sums; a brand-new account's empty stats read as "0 tokens", not an error;
+  disabling meters mid-fetch can't resurrect cleared state.
 - **Why there's no Claude equivalent:** Anthropic's usage API reports only
   utilization percentages — no token counts exist for individual accounts
   (verified against the endpoint schema; the token-denominated Admin API is

@@ -192,6 +192,9 @@ Claude Code (`/usage`). Pulse can read the same gauge:
   30-day daily mini-chart, across **all devices** — from the endpoint behind
   Codex's own usage chart (`chatgpt.com`, polled every 10 minutes).
   Anthropic's API exposes percentages only, so no Claude equivalent exists.
+  Consent is explicit: enabling meters **from the dashboard** turns on both
+  providers (`{"accountMeters": true, "codexAccountUsage": true}`); a config
+  that predates v1.6.0 keeps the ChatGPT call off until you re-toggle.
 
 ## 🧠 Reasoning-effort chips
 
