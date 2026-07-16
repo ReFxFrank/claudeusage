@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.3
+
+- **Cleaner presence:** removed the 5-hour/weekly meter line from the Discord
+  activity — it's now a single rotating line (Today / Past 7 days / All-time
+  tokens + spend), nothing else.
+
 ## v1.7.2
 
 - **Rotating presence pages:** instead of cramming every number into two

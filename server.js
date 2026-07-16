@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.7.2';
+const PULSE_VERSION = '1.7.3';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -2466,8 +2466,7 @@ function buildDiscordActivity() {
   try { s = buildSummary(null); } catch (_) { return null; }
   if (!s) return null;
   // One period per page — Today / Past 7 days / All-time — alternating on
-  // the shared clock. Live window meters sit on the second line of every
-  // page; without meters the activity is a single line.
+  // the shared clock. Single line: tokens + spend, nothing else.
   const pages = [
     { label: 'Today', tokens: s.today.tokens, cost: s.today.cost },
     { label: 'Past 7 days', tokens: s.week.tokens, cost: s.week.cost },
@@ -2475,18 +2474,7 @@ function buildDiscordActivity() {
   ];
   const p = pages[Math.floor(Date.now() / discordRotateMs()) % pages.length];
   const details = p.label + ': ' + fmtTok(p.tokens) + ' tokens · ' + fmtMoney(p.cost);
-  const meterBits = [];
-  if (s.meters && s.meters.enabled && s.meters.buckets) {
-    const fh = s.meters.buckets.find((b) => b.key === 'five_hour');
-    const wk = s.meters.buckets.find((b) => b.key === 'seven_day' || b.key === 'seven_day_overall');
-    if (fh) meterBits.push('Claude 5h ' + fh.pct.toFixed(0) + '%');
-    if (wk) meterBits.push('wk ' + wk.pct.toFixed(0) + '%');
-  }
-  if (s.codexMeters && s.codexMeters.buckets) {
-    const cw = s.codexMeters.buckets.find((b) => b.key === 'codex_secondary' && !b.stale);
-    if (cw) meterBits.push('Codex wk ' + cw.pct.toFixed(0) + '%');
-  }
-  const act = {
+  return {
     details: details.slice(0, 128),
     timestamps: { start: SERVER_START }, // elapsed stays continuous across pages
     assets: {
@@ -2496,8 +2484,6 @@ function buildDiscordActivity() {
     buttons: [{ label: 'Get Pulse', url: PULSE_REPO_URL }],
     instance: false,
   };
-  if (meterBits.length) act.state = meterBits.join(' · ').slice(0, 128);
-  return act;
 }
 
 function discordSetActivity(activity) {

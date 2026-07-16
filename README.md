@@ -205,8 +205,7 @@ Claude Code (`/usage`). Pulse can read the same gauge:
 Show Pulse as a Discord activity that rotates through your usage — **"Today:
 80.0M tokens · $136" → "Past 7 days: 500M tokens · $980" → "All-time: 2.69B
 tokens · $2,581"** — one page every 45 s (set `discordRotateSecs` in
-`~/.pulse/config.json`, 15–300), with live window meters on the second line
-when account meters are on, and a **Get Pulse** button.
+`~/.pulse/config.json`, 15–300), with a **Get Pulse** button.
 
 **Zero setup:** click **Discord presence: off → on** in the Server panel while
 the Discord desktop app is running. Pulse ships with the official Pulse
