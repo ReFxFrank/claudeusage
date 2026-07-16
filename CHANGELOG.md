@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.6.1
+
+- **Effort chips from the interactive `/effort` picker:** typing bare
+  `/effort` (the default in the desktop app) opens a level picker, and the
+  transcript's command record then carries **no arguments** — so Pulse saw
+  nothing and the session showed a "–" where the effort chip belonged. The
+  chosen level does appear in the CLI's confirmation echo ("Set effort level
+  to high (this session only)…"), which Pulse now parses: picker selections,
+  "Kept effort level as …", and "… set to auto" (clears the chip) all count.
+  Retroactive — existing sessions gain their chips on the next refresh.
+  Only CLI-written stdout is matched, anchored, so quoting those words in a
+  prompt can't forge a chip.
+
 ## v1.6.0
 
 - **Real account-wide token counts for Codex (opt-in):** the Account-limits

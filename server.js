@@ -24,7 +24,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.6.0';
+const PULSE_VERSION = '1.6.1';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -461,21 +461,43 @@ function userText(rec) {
 
 // Reasoning-effort level names Claude Code accepts for `/effort` (ultracode is
 // handled separately — it is xhigh plus workflow orchestration, shown as ULTRA).
-const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+const EFFORT_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 
 // Detect a local-command user record (`/effort`, `/model`, …). Claude Code
 // writes these into the transcript as XML-ish tags:
 //   <command-name>/effort</command-name> ... <command-args>max</command-args>
 // and echoes their output in a follow-up <local-command-stdout> record.
-// Returns { name, args } for a command record, { name: '', args: '' } for a
-// stdout echo, or null for a real prompt.
+// Returns { name, args } for a command record, { name: '', args: '', stdout }
+// for a stdout echo, or null for a real prompt.
 function parseLocalCommand(txt) {
   const m = /<command-name>\s*(\/[\w:.-]+)\s*<\/command-name>/.exec(txt);
   if (m) {
     const a = /<command-args>([\s\S]*?)<\/command-args>/.exec(txt);
     return { name: m[1], args: a ? a[1].trim() : '' };
   }
-  if (txt.indexOf('<local-command-stdout>') !== -1) return { name: '', args: '' };
+  if (txt.indexOf('<local-command-stdout>') !== -1) {
+    const s = /<local-command-stdout>([\s\S]*?)<\/local-command-stdout>/.exec(txt);
+    return { name: '', args: '', stdout: s ? s[1].trim() : '' };
+  }
+  return null;
+}
+
+// Parse an /effort confirmation echo into an effort event, or null. Bare
+// `/effort` opens an interactive picker — the command record carries NO args
+// (so the args path yields nothing), but the CLI-generated confirmation names
+// the chosen level:
+//   "Set effort level to high (this session only)"
+//   "Set effort level to ultracode (this session only): xhigh + dynamic ..."
+//   "Kept effort level as max" · "Effort level set to auto"
+// Only CLI-written stdout is matched (never prompt text), anchored at the
+// start, so a user QUOTING these words can't forge an event.
+function parseEffortStdout(stdout) {
+  const m = /^(?:Set effort level to|Kept effort level as|Effort level set to)\s+([a-z]+)/i.exec(stdout || '');
+  if (!m) return null;
+  const lvl = m[1].toLowerCase();
+  if (lvl === 'ultracode') return { effort: null, ultracode: true };
+  if (lvl === 'auto') return { effort: null, ultracode: false }; // back to default → no chip
+  if (EFFORT_LEVELS.has(lvl)) return { effort: lvl, ultracode: false };
   return null;
 }
 
@@ -598,8 +620,18 @@ function parseFile(filePath) {
             else if (EFFORT_LEVELS.has(lvl)) effortEvents.push({ sessionId: sid, ts, effort: lvl, ultracode: false });
           }
         }
-        // Command records (incl. stdout echoes like "Set effort level to
-        // ultracode") are not prompt text — never keyword-flag from them.
+        // Bare `/effort` (the interactive picker, the desktop-app default)
+        // leaves args empty — the chosen level only exists in the CLI's
+        // confirmation echo. Parse that too. Inline usage produces both a
+        // command event and an echo event with the same value — harmless,
+        // the join reads them as identical state snapshots.
+        if (sid && cmd.stdout) {
+          const ev = parseEffortStdout(cmd.stdout);
+          const ts = Date.parse(rec.timestamp);
+          if (ev && isFinite(ts)) effortEvents.push({ sessionId: sid, ts, ...ev });
+        }
+        // Command records and their stdout echoes are not prompt text —
+        // never keyword-flag ultracode from them.
       } else if (sid && /\bultracode\b/i.test(txt)) {
         // The keyword in a real prompt opts the whole session in — works
         // retroactively, even before any effort source was set up.
