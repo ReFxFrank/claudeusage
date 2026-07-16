@@ -116,3 +116,8 @@ Test/dev env hooks: `PULSE_HOME`, `CLAUDE_DIR`/`CLAUDE_CONFIG_DIR`,
   windows need users to raise it.
 - The frontend has a lite-graphics mode (software-rendering detection) —
   avoid `backdrop-filter` and permanent animations in new UI.
+- Model-family recognition lives in `web/src/model-families.js` (pure
+  classifier + `FAMILY_META`, unit-tested) and `web/src/logos.jsx` (SVG marks);
+  it only classifies models that reach Pulse. Ingesting other agent CLIs
+  (Gemini CLI, Cursor, Aider) is a separate, un-started effort — each needs its
+  own on-disk log format reverse-engineered against a real sample file.

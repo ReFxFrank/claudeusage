@@ -236,7 +236,7 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, onStopped, gfx })
                   <span style={{ color: 'var(--text-3)', cursor: 'help', textTransform: 'none' }}>ⓘ</span>
                 </InfoTip>
               </h2>
-              <BarList rows={modelRows} />
+              <BarList rows={modelRows} modelLogos />
             </Card>
             {period.singleSource ? (
               <Card delay={0.28}>

@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.11.0
+
+- **Model-family recognition — provider logos on every model:** each model now
+  shows a small provider mark (Anthropic, OpenAI, Google, DeepSeek, Meta, xAI,
+  Qwen, Mistral, Cohere, plus a generic fallback) in the **By model** list and
+  the **Recent sessions** table, colored and labeled by family. Marks are simple
+  original glyphs in brand colors — no heavyweight assets — and a family only
+  ever appears when one of its models is actually in your logs. The classifier
+  is unit-tested (`test/model-families.test.sh`).
+  - Note: this recognizes any model that reaches Pulse. Seeing usage from other
+    agent CLIs (Gemini CLI, Cursor, Aider, …) still requires ingesting their own
+    logs — a separate, per-tool step.
+
 ## v1.10.1
 
 - **Discord logo follows what you're using:** the large presence image now

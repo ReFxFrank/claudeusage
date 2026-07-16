@@ -4,6 +4,7 @@ import * as Select from '@radix-ui/react-select';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { ProgressRing } from './charts.jsx';
 import { money2, tokens, num, pct, durClock, hm, ago, ACCENT, perf } from './lib.js';
+import { ModelLogo, modelFamily, FAMILY_META } from './logos.jsx';
 
 const EASE = [0.2, 0.7, 0.2, 1];
 
@@ -203,17 +204,18 @@ export function EffortBadges({ efforts, ultracode, align = 'flex-end' }) {
   );
 }
 
-// horizontal bars for by-model / by-source
-export function BarList({ rows }) {
+// horizontal bars for by-model / by-source. `modelLogos` swaps the color chip
+// for a provider mark (recognized per model family) on the by-model list.
+export function BarList({ rows, modelLogos = false }) {
   let max = 0;
   rows.forEach((r) => { if (r.cost > max) max = r.cost; });
   if (max <= 0) max = 1;
   return (
     <div className="hbars">
       {rows.map((r) => (
-        <InfoTip key={r.name} text={`${r.name} — ${money2(r.cost)} · ${tokens(r.tokens)} tokens · ${num(r.messages)} msgs`}>
+        <InfoTip key={r.name} text={`${modelLogos ? FAMILY_META[modelFamily(r.name)].label + ' · ' : ''}${r.name} — ${money2(r.cost)} · ${tokens(r.tokens)} tokens · ${num(r.messages)} msgs`}>
           <div className="hbar">
-            <div className="nm"><i style={{ background: r.color }} />{r.name}</div>
+            <div className="nm">{modelLogos ? <ModelLogo model={r.name} size={16} /> : <i style={{ background: r.color }} />}{r.name}</div>
             <div className="track">
               <motion.i
                 style={{ background: r.color }}
@@ -336,7 +338,15 @@ export function SessionsTable({ sessions }) {
                   )}
                 </span>
               </td>
-              <td style={{ color: 'var(--text-3)' }}>{s.models.join(', ')}</td>
+              <td style={{ color: 'var(--text-3)' }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  {s.models.map((mdl) => (
+                    <span key={mdl} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                      <ModelLogo model={mdl} size={13} />{mdl}
+                    </span>
+                  ))}
+                </span>
+              </td>
               <td className="n">{money2(s.cost)}</td>
               <td className="n">{tokens(s.tokens)}</td>
               <td className="n">{num(s.messages)}</td>

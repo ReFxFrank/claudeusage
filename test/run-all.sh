@@ -4,7 +4,7 @@
 set -u
 DIR=$(cd "$(dirname "$0")" && pwd)
 FAILED=0
-for t in meters pricing codex-usage discord effort-echo history statusline analytics; do
+for t in meters pricing codex-usage discord effort-echo history statusline analytics model-families; do
   echo "=== $t ==="
   if ! bash "$DIR/$t.test.sh"; then
     FAILED=1
