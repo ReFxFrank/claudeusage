@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.12.2';
+const PULSE_VERSION = '1.13.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 
@@ -1869,6 +1869,9 @@ function buildSummary(sourceFilter, opts) {
   payload.daemon = IS_DAEMON_CHILD;
   payload.packaged = !!seaApi;
   payload.update = updateState;
+  // Community reach (public GitHub counters) — present only once fetched; the
+  // fetch itself is scheduled alongside the update check and shares its opt-out.
+  payload.reach = reachForPayload();
   payload.meters = metersForPayload(background);
   // Codex official meters come from rate_limits snapshots already present in
   // the local rollout logs — no opt-in needed, nothing leaves the machine.
@@ -2197,6 +2200,81 @@ function cleanupOldExecutable() {
     const dl = process.execPath + '.download';
     if (fs.existsSync(dl)) fs.unlinkSync(dl);
   } catch (_) { /* next start */ }
+}
+
+// ---------------------------------------------------------------------------
+// COMMUNITY REACH — how many people use Pulse, from PUBLIC GitHub data only.
+// A live "who's online" counter would mean every install phoning home; Pulse
+// promises the opposite ("usage data never leaves the machine"). So instead we
+// read two PUBLIC, already-there numbers off the same GitHub API the update
+// check uses: total release-asset download_count (the best proxy for "people
+// using Pulse") and the repo star count. NOTHING about the user is sent — it's
+// an outbound GET for public counters, gated by the SAME opt-out as the update
+// check (--no-update-check / {"updateCheck":false}). Cached for hours so it
+// never approaches GitHub's unauthenticated rate limit.
+// ---------------------------------------------------------------------------
+const REACH_RELEASES_API = process.env.PULSE_REACH_API ||
+  'https://api.github.com/repos/' + UPDATE_REPO + '/releases?per_page=100';
+const REACH_REPO_API = process.env.PULSE_REACH_REPO_API ||
+  'https://api.github.com/repos/' + UPDATE_REPO;
+const REACH_CACHE_MS = Number(process.env.PULSE_REACH_CACHE_MS) || 6 * 3600 * 1000;
+const reachState = { downloads: null, stars: null, fetchedAt: 0, status: 'idle' };
+let reachInFlight = false;
+
+// Fetch the public counters. Downloads (sum over every release's assets) and
+// stars come from two GETs; each independently retains its last-good value on
+// error, exactly like the account meters, so a rate-limit blip never blanks the
+// badge. Cheap and self-throttled via REACH_CACHE_MS.
+function refreshReach(done) {
+  if (reachInFlight) return done && done(reachState);
+  if (reachState.fetchedAt && Date.now() - reachState.fetchedAt < REACH_CACHE_MS) {
+    return done && done(reachState);
+  }
+  reachInFlight = true;
+  fetchUrl(REACH_RELEASES_API, {}, (err, body) => {
+    let downloads = null;
+    if (!err) {
+      try {
+        const rels = JSON.parse(body);
+        if (Array.isArray(rels)) {
+          downloads = 0;
+          for (const r of rels) for (const a of (Array.isArray(r.assets) ? r.assets : [])) {
+            downloads += num(a.download_count);
+          }
+        }
+      } catch (_) { /* leave null → keep last-good */ }
+    }
+    fetchUrl(REACH_REPO_API, {}, (err2, body2) => {
+      let stars = null;
+      if (!err2) {
+        try {
+          const repo = JSON.parse(body2);
+          if (repo && typeof repo.stargazers_count === 'number') stars = repo.stargazers_count;
+        } catch (_) { /* leave null → keep last-good */ }
+      }
+      reachInFlight = false;
+      reachState.fetchedAt = Date.now();
+      if (downloads != null) reachState.downloads = downloads;
+      if (stars != null) reachState.stars = stars;
+      reachState.status = (reachState.downloads != null || reachState.stars != null) ? 'ok' : 'error';
+      if (downloads != null || stars != null) {
+        console.log(`[pulse] community reach: ${reachState.downloads != null ? reachState.downloads : '?'} downloads, ${reachState.stars != null ? reachState.stars : '?'} stars`);
+      }
+      done && done(reachState);
+    });
+  });
+}
+
+// Payload view: expose the counters only once at least one has been fetched
+// (so a disabled/never-fetched reach simply omits the badge).
+function reachForPayload() {
+  if (reachState.downloads == null && reachState.stars == null) return null;
+  return {
+    downloads: reachState.downloads,
+    stars: reachState.stars,
+    fetchedAt: reachState.fetchedAt,
+    repo: UPDATE_REPO,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -3318,6 +3396,11 @@ function startServer(port, host, opts) {
       setTimeout(() => checkForUpdate(), 2500);
       const iv = setInterval(() => checkForUpdate(), 24 * 3600 * 1000);
       if (iv.unref) iv.unref();
+      // Community reach shares the update check's opt-out and network path.
+      // Its own 6h cache means the interval is just a ceiling, never a poll.
+      setTimeout(() => refreshReach(), 3200);
+      const riv = setInterval(() => refreshReach(), 6 * 3600 * 1000);
+      if (riv.unref) riv.unref();
     }
     startDiscordLoop(); // no-ops every tick unless discordPresence is on
     // Seal history even on a headless daemon that no one is viewing (viewers

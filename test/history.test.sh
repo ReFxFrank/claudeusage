@@ -32,7 +32,12 @@ const A = (ms, sid, id, model, inTok, outTok) => ({ type: "assistant", timestamp
 const FAB = "claude-fable-5", OPUS = "claude-opus-4-8";
 // live entries (source defaults to "cli"): today 150k (FAB); H=40d 500k (FAB);
 // F=50d 100k (FAB only — its OPUS usage has been pruned from the live logs).
-const tToday = at(0, -2), tH = at(40), tF = at(50);
+// "earlier today", but anchored to local midnight and clamped to now so it
+// can never slip into yesterday when the test runs just after midnight (which
+// sealHistory would correctly seal, failing the "never seal today" check) or
+// land in the future (which the <= now aggregation guards would drop).
+const startToday = new Date(now); startToday.setHours(0, 0, 0, 0);
+const tToday = Math.min(now, startToday.getTime() + 2 * 3600e3), tH = at(40), tF = at(50);
 fs.writeFileSync(CL + "/projects/demo/s.jsonl", [
   A(tToday, "s-today", 1, FAB, 100000, 50000),
   A(tH, "s-H", 2, FAB, 300000, 200000),

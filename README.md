@@ -3,10 +3,12 @@
 
 # Pulse
 
-**A live, local, zero-dependency usage dashboard for [Claude Code](https://claude.com/claude-code).**
+**A live, local, zero-dependency usage dashboard for [Claude Code](https://claude.com/claude-code) and [OpenAI Codex](https://github.com/openai/codex).**
 
-See what you're spending, which models you're burning it on, your 5-hour block, and
-which sessions ran at which reasoning effort — all from the logs already on your machine.
+See what you're spending, which models you're burning it on (Claude, GPT/Codex, and
+Z.ai GLM — each with its own provider mark), your 5-hour block and official account
+limits, when you work, and which sessions ran at which reasoning effort — all from the
+logs already on your machine.
 
 [![Release](https://img.shields.io/github/v/release/ReFxFrank/Pulse-Usage-Monitor?color=8f7ff5&label=release)](https://github.com/ReFxFrank/Pulse-Usage-Monitor/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/ReFxFrank/Pulse-Usage-Monitor/total?color=8f7ff5&label=downloads)](https://github.com/ReFxFrank/Pulse-Usage-Monitor/releases)
@@ -71,6 +73,10 @@ which sessions ran at which reasoning effort — all from the logs already on yo
   version, uptime, **Stop**, and updates live in the dashboard's **Server panel**.
 - 🔄 **Self-updating** — one click installs new releases (sha256-verified against the
   GitHub API). Double-clicking a newer exe over a running old one takes over cleanly.
+- 🌍 **Community reach** — a small header pill shows how far Pulse has spread (total
+  release downloads + GitHub stars), read from GitHub's **public** API. It's the
+  privacy-preserving take on a "who's using Pulse" counter: nothing about you is sent,
+  no backend, no phone-home — it rides the same opt-out as the version check.
 - ⏯ **Easy start/stop** — Stop button in the header; `--install-shortcuts` puts
   **"Pulse"** / **"Pulse — Stop"** buttons on your Desktop; `--stop` for scripts.
 - 🪶 **Zero runtime dependencies** — one Node process, built-ins only (`npm ls` is empty).
@@ -362,12 +368,14 @@ amount you'll be charged. Verify current list prices at
 - Binds to `127.0.0.1` only — not reachable from the network.
 - Reads `~/.claude` **read-only**; never writes, moves, or deletes anything there.
   Pulse's own files (config, logs, effort sidecar) live in `~/.pulse`.
-- Outbound requests, exhaustively: (1) the GitHub version check (on by default,
-  `--no-update-check` disables; plus the sha256-verified release download if you
-  click *Update now*), and (2) the **opt-in** account-meters calls to
+- Outbound requests, exhaustively: (1) the GitHub version check + community-reach
+  counters (on by default, `--no-update-check` / `{"updateCheck": false}` disables
+  both; plus the sha256-verified release download if you click *Update now*) — these
+  read **public** GitHub data (latest version, release download totals, star count)
+  and send **nothing about you**; and (2) the **opt-in** account-meters calls to
   `api.anthropic.com` and `chatgpt.com` described above (off by default). **No usage data ever
-  leaves your machine** in either case. With updates off and meters off, Pulse
-  makes zero network calls. No CDN, no fonts, no analytics, no telemetry.
+  leaves your machine** in any case. With updates off and meters off, Pulse
+  makes zero network calls. No CDN, no fonts, no analytics, no telemetry, no phone-home.
 - Endpoints with side effects (stop, update) are POST-only, loopback-only,
   Host-header-checked, and require a custom header — web pages you visit cannot
   trigger them (CSRF/DNS-rebinding hardened; data reads are Host-checked too).

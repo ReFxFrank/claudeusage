@@ -20,9 +20,11 @@ the old name; git remotes redirect).
 5. **Credentials:** OAuth tokens are read read-only, never logged, never in
    payloads, and sent ONLY to their own provider's endpoint. Sync throws in
    `fetchUrl` are routed to callbacks (corrupt cred files must never 500).
-6. **Network calls, exhaustively:** GitHub version check (opt-out),
+6. **Network calls, exhaustively:** GitHub version check + community-reach
+   counters (both opt-out, same `updateCheck` gate, public data only),
    api.anthropic.com + chatgpt.com meters (opt-in), Discord local socket
-   (opt-in, not network). Usage data never leaves the machine.
+   (opt-in, not network). Usage data never leaves the machine — the reach
+   counters are PUBLIC GitHub numbers read IN, never anything sent OUT.
 
 ## Layout
 
@@ -55,6 +57,7 @@ the old name; git remotes redirect).
 | Codex account tokens (opt-in) | `refreshCodexUsage` — GET chatgpt.com/backend-api/wham/profiles/me with `~/.codex/auth.json` token + `ChatGPT-Account-Id` header → `stats.{lifetime_tokens, peak_daily_tokens, daily_usage_buckets}`; `normalizeCodexUsage` (date-validated buckets, empty-stats = ok-with-zero) |
 | Discord Rich Presence (opt-in) | `discordConnect` (hand-rolled IPC: 8-byte LE header + JSON over named pipe / unix socket, candidates incl. snap/flatpak), `buildDiscordActivity` (rotating pages Today / Past 7 days / All-time, wall-clock derived; large_image tracks `payload.activeProvider` — claude/codex art keys, else pulse), `DISCORD_CLIENT_ID_DEFAULT` = the official Pulse app (public identifier) |
 | Self-update | `checkForUpdate`, `installUpdate` — sha256 digest fail-closed, rename swap + rollback, no downgrades |
+| Community reach | `refreshReach`/`reachForPayload` → `payload.reach` = `{downloads, stars, fetchedAt, repo}` from PUBLIC GitHub only (sum of every release's asset `download_count` + repo `stargazers_count`); last-good retention per counter; scheduled beside `checkForUpdate` (startup + 6h) and gated by the SAME opt-out (`updateCheck`/`--no-update-check`); 6h cache (`PULSE_REACH_CACHE_MS`), endpoints overridable (`PULSE_REACH_API`, `PULSE_REACH_REPO_API`); NOT a phone-home — nothing about the user is sent; UI: `.reachpill` in the header (App.jsx) |
 | Windows daemon | `--daemon-child`, `windowsHide`, `~/.pulse/pulse.log`, `--stop`, `--install-shortcuts` |
 | Status line | `--statusline` (reads Claude Code's stdin JSON, fetches slim `/api/statusline` from the running server via `~/.pulse/server.json` port, prints an ANSI line; fail-open, always exit 0), `statuslineData`/`statuslineMemo` (3s), `--statusline-setup` prints the settings.json snippet (never writes `~/.claude`); `NO_COLOR` respected |
 | Limit alerts | `computeAlerts(meters, codexMeters)` → `payload.alerts` (both Claude buckets + Codex snapshot buckets ≥ lowest threshold, deduped by `provider:key`, provider-labelled, sorted most-urgent-first, skips `stale`; **drops maxed windows** — rounded pct ≥ 100 is a reached limit, not "approaching", so it's excluded from the banner + notifications though it still shows in the meter gauges); `alertsEnabled()` (`{"alerts": false}` off), `alertThresholds()` (config `alertThresholds`, default `[80,95]`); UI: `AlertsBar` (panels.jsx) + browser notifications in lib.js (`fireAlertNotifications` dedups via `localStorage` key `pulse-alerted`, alertKey `key\|threshold\|resetsAt`) |
@@ -70,7 +73,8 @@ unless `false`), `alerts` (limit alerts; on unless `false`), `alertThresholds`
 (array of pct 1–100; default `[80,95]`), `updateCheck`.
 
 Test/dev env hooks: `PULSE_HOME`, `CLAUDE_DIR`/`CLAUDE_CONFIG_DIR`,
-`CODEX_DIR`/`CODEX_HOME`, `PULSE_HISTORY_DIR`, `PULSE_METERS_API`,
+`CODEX_DIR`/`CODEX_HOME`, `PULSE_HISTORY_DIR`, `PULSE_REACH_API`,
+`PULSE_REACH_REPO_API`, `PULSE_REACH_CACHE_MS`, `PULSE_METERS_API`,
 `PULSE_METERS_CACHE_MS`, `PULSE_CODEX_USAGE_API`, `PULSE_CODEX_USAGE_CACHE_MS`,
 `PULSE_DISCORD_IPC`, `PULSE_DISCORD_TICK_MS`, `PULSE_DISCORD_ROTATE_MS`,
 `PULSE_DISCORD_CLIENT_ID`, `PULSE_MODES_FILE`, `PULSE_FAKE_DARWIN`.

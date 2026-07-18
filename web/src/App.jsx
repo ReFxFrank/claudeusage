@@ -87,6 +87,19 @@ export default function App() {
       header={
         <div className="hmeta">
           <div className="hactions">
+            {data.reach && (data.reach.downloads != null || data.reach.stars != null) && (
+              <a
+                className="reachpill"
+                href={`https://github.com/${data.reach.repo}`}
+                target="_blank"
+                rel="noreferrer"
+                title={`Pulse's public GitHub reach — ${data.reach.downloads != null ? num(data.reach.downloads) + ' total downloads' : ''}${data.reach.downloads != null && data.reach.stars != null ? ' · ' : ''}${data.reach.stars != null ? num(data.reach.stars) + ' stars' : ''}. Public counts only — nothing about you leaves this machine.`}
+              >
+                {data.reach.downloads != null && <>↓ {num(data.reach.downloads)}</>}
+                {data.reach.downloads != null && data.reach.stars != null && ' · '}
+                {data.reach.stars != null && <>★ {num(data.reach.stars)}</>}
+              </a>
+            )}
             {data.update?.status === 'available' && (
               <a className="updpill" href="#server">v{data.update.latest} available ↓</a>
             )}

@@ -264,7 +264,11 @@ export function BarList({ rows, modelLogos = false }) {
   rows.forEach((r) => { if (r.cost > max) max = r.cost; });
   if (max <= 0) max = 1;
   return (
-    <div className="hbars">
+    <>
+      {/* the bar encodes spend, not tokens — spell it out so a low-token but
+          costly model (or vice-versa) never looks mis-sized next to its numbers. */}
+      <div className="barhint">bar length = spend · numbers show $ · tokens</div>
+      <div className="hbars">
       {rows.map((r) => (
         <InfoTip key={r.name} text={`${modelLogos ? FAMILY_META[modelFamily(r.name)].label + ' · ' : ''}${r.name} — ${money2(r.cost)} · ${tokens(r.tokens)} tokens · ${num(r.messages)} msgs`}>
           <div className="hbar">
@@ -285,7 +289,8 @@ export function BarList({ rows, modelLogos = false }) {
           </div>
         </InfoTip>
       ))}
-    </div>
+      </div>
+    </>
   );
 }
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.13.0
+
+- **Community reach on the dashboard:** a small header pill shows how far Pulse
+  has spread — total release downloads and GitHub stars — pulled from GitHub's
+  **public** API. This is the privacy-preserving version of a "who's using Pulse
+  now" counter: **nothing about you is sent**, there's no backend and no
+  phone-home. It rides the *same* network call and opt-out as the update check
+  (`--no-update-check` / `{"updateCheck": false}` turns it off too) and is
+  cached for hours, so it never approaches GitHub's rate limit.
+- **By-model / by-source bars now say what they measure:** a caption — *"bar
+  length = spend · numbers show $ · tokens"* — makes explicit that the bar
+  encodes **spend**, not tokens. Previously a low-token but costly model (or the
+  reverse) could look mis-sized next to its own numbers; the bars were always
+  correct (sorted and sized by cost), this just removes the ambiguity.
+
 ## v1.12.2
 
 - **Limit alerts drop maxed-out windows:** a window that's already at 100% is a
