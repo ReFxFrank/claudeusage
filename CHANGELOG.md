@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.14.0
+
+- **More agents, no setup:** Pulse now ingests three more coding agents straight
+  from their own on-disk logs — nothing for you to export or configure. Each
+  shows up as its own **source** (in the source filter, by-source/by-model
+  breakdowns, and totals), and only when its logs are actually on the machine:
+  - **Gemini CLI** — reads `~/.gemini/tmp/*/chats/session-*.jsonl`; per-turn
+    model + tokens, priced at Google Gemini API list rates (new pricing table:
+    Gemini 3 Pro/Flash, 3.5 Flash, 3.1 Pro/Flash-Lite, 2.5 Pro/Flash/Flash-Lite).
+  - **Continue** — reads `~/.continue/dev_data/*/tokensGenerated.jsonl`. These
+    are Continue's **own local estimates**, not provider billing, so the source
+    is badged **est** and priced from the model. (`CONTINUE_GLOBAL_DIR` honored.)
+  - **Cline** — reads the VS Code extension's task history
+    (`globalStorage/saoudrizwan.claude-dev/tasks/*/ui_messages.json`), across
+    Code / Insiders / VSCodium / Cursor / Windsurf and remote installs. Uses
+    Cline's **own recorded per-request cost**; model from its task metadata.
+  - Overrides for testing/relocation: `GEMINI_DIR`/`GEMINI_CLI_HOME`,
+    `CONTINUE_DIR`/`CONTINUE_GLOBAL_DIR`, `CLINE_DIR`.
+- Everything stays local and read-only — these logs are only ever read, never
+  written.
+
 ## v1.13.3
 
 - **Discord presence timer no longer resets on update:** the elapsed-time

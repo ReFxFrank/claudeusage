@@ -31,6 +31,12 @@ logs already on your machine.
 - 🟢 **OpenAI Codex support** — if you also use the [Codex CLI](https://github.com/openai/codex),
   Pulse ingests `~/.codex/sessions` automatically: `gpt-*` model rows, a `codex`
   source, session titles, reasoning-effort chips, and costs at OpenAI list prices.
+- 🧩 **More agents, zero setup** — Pulse also reads **Gemini CLI**
+  (`~/.gemini`), **Continue** (`~/.continue`), and **Cline** (its VS Code task
+  history) straight from their own local logs. Each appears as its own source,
+  only if present, with per-model tokens and cost (Gemini at Google list prices;
+  Cline uses its own recorded cost; Continue's numbers are its **own local
+  estimates**, so that source is badged `est`). Nothing to export or configure.
 - 📡 **Official account meters** — provider-issued gauges with **true reset
   times**: Anthropic's account-wide 5-hour/weekly bars (opt-in; includes
   claude.ai chats, cloud sessions, other devices) and your ChatGPT plan's

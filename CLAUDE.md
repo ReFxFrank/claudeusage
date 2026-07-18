@@ -1,7 +1,8 @@
 # CLAUDE.md — working notes for agents on this repo
 
 Pulse is a **local, zero-runtime-dependency usage dashboard** for Claude Code
-and OpenAI Codex. One Node server file + a prebuilt React frontend, shipped as
+and OpenAI Codex (plus Gemini CLI, Continue, and Cline, read from their own
+local logs). One Node server file + a prebuilt React frontend, shipped as
 single-file executables. Owner: frank (ReFxFrank). Repo was renamed
 `claudeusage` → `Pulse-Usage-Monitor` (session tooling may still address it by
 the old name; git remotes redirect).
@@ -47,7 +48,8 @@ the old name; git remotes redirect).
 |---|---|
 | Claude transcript parsing | `parseFile`, `normalize`, `dedupKey`, mtime `fileCache` |
 | Codex rollout parsing | `parseCodexFile` (token_count deltas, `turn_context` model+effort, replay-safe keys, `preModelEntries` backfill) |
-| Pricing | `PRICING` (Anthropic + Zhipu/Z.ai `glm-*`, which arrive via Claude Code's Z.ai Anthropic-compatible proxy and price through the Claude path w/ longest-prefix match), `PRICING_OPENAI` (exact rows; prefix fallback ONLY for date suffixes — OpenAI `-mini`/`-pro` are different models), unknown models log once + `__default__` |
+| Other-agent parsing | `parseGeminiFile` (`~/.gemini/tmp/*/chats/session-*.jsonl`; `tokens{input(incl cached),output,cached,thoughts,tool}`+`model`; dedup by id last-write-wins; provider `google`/source `gemini`), `parseContinueFile` (`~/.continue/dev_data/*/tokensGenerated.jsonl`; camelCase, `{name,timestamp,data}` envelope; LOCAL ESTIMATES → `estimate:true`; dedup by path+lineIndex; provider inferred from model), `parseClineFile` (VS Code `globalStorage/saoudrizwan.claude-dev/tasks/*/ui_messages.json`; `api_req_started.text` is stringified JSON `{tokensIn,tokensOut,cacheWrites,cacheReads,cost}`; uses Cline's OWN `cost`; model from sibling `task_metadata.json` `model_usage` state-snapshot); `agentEntry` skeleton; `clineTaskFiles`/`clineExtensionDirs` (Code/Insiders/VSCodium/Cursor/Windsurf + `.vscode-server`); all dispatched by set-membership in `parseAll` |
+| Pricing | `PRICING` (Anthropic + Zhipu/Z.ai `glm-*`, which arrive via Claude Code's Z.ai Anthropic-compatible proxy and price through the Claude path w/ longest-prefix match), `PRICING_OPENAI` (exact rows; prefix fallback ONLY for date suffixes — OpenAI `-mini`/`-pro` are different models), `PRICING_GOOGLE` (`priceForGoogle`, longest-prefix so `-flash-lite` beats `-flash` and dated/-preview fall back; cached=10% of input; July 2026 Gemini rates); `costForEntry` dispatches `openai`→OpenAI, `google`→Google, else Claude path; unknown models log once + `__default__` |
 | Effort chips | `parseLocalCommand`, `parseEffortStdout` (interactive-picker confirmation echoes), `mergeModes`, `annotateModes` (state-snapshot join: latest event ≤ entry.ts; `parseEffort` is the immutable Codex-side input) |
 | Analytics breakdowns | `buildPeriod` also emits per-period `effortSpend` (bucket = ultracode\|level\|default), `byProject` (top 30 by cost + `(other)`), `liveCost` — all LIVE-only (archive keeps no per-entry effort/project); UI: `EffortSpendBars`/`ProjectBars` (panels.jsx) |
 | 5h block | `aggregate` — official window from meters `five_hour.resets_at` when available (`official: true`), else log reconstruction |
@@ -73,7 +75,8 @@ unless `false`), `alerts` (limit alerts; on unless `false`), `alertThresholds`
 (array of pct 1–100; default `[80,95]`), `updateCheck`.
 
 Test/dev env hooks: `PULSE_HOME`, `CLAUDE_DIR`/`CLAUDE_CONFIG_DIR`,
-`CODEX_DIR`/`CODEX_HOME`, `PULSE_HISTORY_DIR`, `PULSE_REACH_API`,
+`CODEX_DIR`/`CODEX_HOME`, `GEMINI_DIR`/`GEMINI_CLI_HOME`,
+`CONTINUE_DIR`/`CONTINUE_GLOBAL_DIR`, `CLINE_DIR`, `PULSE_HISTORY_DIR`, `PULSE_REACH_API`,
 `PULSE_REACH_REPO_API`, `PULSE_REACH_CACHE_MS`, `PULSE_METERS_API`,
 `PULSE_METERS_CACHE_MS`, `PULSE_CODEX_USAGE_API`, `PULSE_CODEX_USAGE_CACHE_MS`,
 `PULSE_DISCORD_IPC`, `PULSE_DISCORD_TICK_MS`, `PULSE_DISCORD_ROTATE_MS`,
@@ -125,6 +128,18 @@ Test/dev env hooks: `PULSE_HOME`, `CLAUDE_DIR`/`CLAUDE_CONFIG_DIR`,
   avoid `backdrop-filter` and permanent animations in new UI.
 - Model-family recognition lives in `web/src/model-families.js` (pure
   classifier + `FAMILY_META`, unit-tested) and `web/src/logos.jsx` (SVG marks);
-  it only classifies models that reach Pulse. Ingesting other agent CLIs
-  (Gemini CLI, Cursor, Aider) is a separate, un-started effort — each needs its
-  own on-disk log format reverse-engineered against a real sample file.
+  it only classifies models that reach Pulse.
+- Other-agent ingestion (v1.14.0): Gemini CLI, Continue, Cline are read from
+  their own local logs and folded in as sources (see the Other-agent parsing
+  row). Feasibility gate = JSON/JSONL + default-on + Node-builtin-readable.
+  Reverse-engineered format specifics worth remembering: Gemini `input`
+  INCLUDES `cached`; Continue numbers are LOCAL ESTIMATES (badged `est`), not
+  provider billing; Cline's `text` is double-encoded JSON and it records its own
+  `cost` (trust it). NOT feasible under the zero-dep rule (all SQLite-only):
+  **Crush** (`crush.db`), **Goose** (`sessions.db`, v1.10+), **opencode** (v1.16+
+  switched JSON→SQLite; only ≤1.15 was JSON). **Aider**'s exact per-call tokens
+  need its `--analytics-log` opt-in (default history is rounded markdown).
+  **Roo Code** exposes tokens but the model id lives in a SQLite state DB, so
+  only the coarse family is recoverable from files. Adding any of these later
+  means shipping a SQLite reader or raising the Node floor — deliberately not
+  done.

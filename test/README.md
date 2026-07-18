@@ -26,6 +26,7 @@ bash test/discord.test.sh     # one suite
 | `alerts.test.sh` | Limit alerts: Claude meters + Codex snapshot windows at/above a threshold are flagged, sorted most-urgent-first, provider-labelled; thresholds configurable; `alerts:false` disables |
 | `heatmap.test.sh` | Activity heatmap: entries land in the right weekday×hour cell (local time), cells sum cost/tokens/messages, max tracking correct |
 | `reach.test.sh` | Community reach: sums release-asset `download_count` across all releases + reads repo `stargazers_count` from public GitHub, exposes `payload.reach`, honours the update-check opt-out (flag + config) |
+| `agents.test.sh` | Other-agent ingestion: Gemini CLI / Continue / Cline read from their own log formats, folded in as sources, priced correctly (Gemini via Google table, Continue flagged `est`, Cline uses its recorded cost), dedup + no unknown-model warnings |
 
 Conventions when adding tests: fixture homes via `mktemp -d` + `CLAUDE_DIR` /
 `CODEX_DIR` / `PULSE_HOME` env; per-suite fixed port; fake tokens only, with

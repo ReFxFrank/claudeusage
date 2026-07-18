@@ -259,10 +259,11 @@ export function Heatmap({ heatmap }) {
 
 // horizontal bars for by-model / by-source. `modelLogos` swaps the color chip
 // for a provider mark (recognized per model family) on the by-model list.
-export function BarList({ rows, modelLogos = false }) {
+export function BarList({ rows, modelLogos = false, estimatedSources = [] }) {
   let max = 0;
   rows.forEach((r) => { if (r.cost > max) max = r.cost; });
   if (max <= 0) max = 1;
+  const est = new Set(estimatedSources);
   return (
     <>
       {/* the bar encodes spend, not tokens — spell it out so a low-token but
@@ -272,7 +273,7 @@ export function BarList({ rows, modelLogos = false }) {
       {rows.map((r) => (
         <InfoTip key={r.name} text={`${modelLogos ? FAMILY_META[modelFamily(r.name)].label + ' · ' : ''}${r.name} — ${money2(r.cost)} · ${tokens(r.tokens)} tokens · ${num(r.messages)} msgs`}>
           <div className="hbar">
-            <div className="nm">{modelLogos ? <ModelLogo model={r.name} size={16} /> : <i style={{ background: r.color }} />}{r.name}</div>
+            <div className="nm">{modelLogos ? <ModelLogo model={r.name} size={16} /> : <i style={{ background: r.color }} />}{r.name}{est.has(r.name) && <sup className="estmark" title="Locally-estimated usage, not provider-billed">est</sup>}</div>
             <div className="track">
               <motion.i
                 style={{ background: r.color }}

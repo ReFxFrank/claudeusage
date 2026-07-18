@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.13.3';
+const PULSE_VERSION = '1.14.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -285,6 +285,16 @@ function costForEntry(e) {
       (e.cacheRead    / 1e6) * cachedPrice
     );
   }
+  if (e.provider === 'google') {
+    const p = priceForGoogle(e.model);
+    // Gemini context caching bills cached input at ~10% of the input rate.
+    const cachedPrice = p.cachedInput != null ? p.cachedInput : p.input * GOOGLE_CACHE_READ_MULT;
+    return (
+      (e.inputTokens  / 1e6) * p.input +
+      (e.outputTokens / 1e6) * p.output +
+      (e.cacheRead    / 1e6) * cachedPrice
+    );
+  }
   const price = priceFor(e.model, e.ts);
   return (
     (e.inputTokens  / 1e6) * price.input +
@@ -377,6 +387,49 @@ function priceForOpenAI(model) {
 }
 
 // ---------------------------------------------------------------------------
+// GOOGLE / GEMINI PRICING
+// $/MTok at Google Gemini API list prices (ai.google.dev/gemini-api/docs/pricing),
+// July 2026. Reached via the Gemini CLI (source 'gemini'), whose logs carry the
+// real per-turn token counts. On a paid key these are actual API rates; on the
+// free tier they express relative usage, same caveat as the other tables.
+// Context caching bills cached input at ~10% of the input rate. Longest-prefix
+// match (like the Claude table) so dated / -preview / -latest suffixes fall back
+// to their base model, and the longer -flash-lite key wins over -flash.
+// ---------------------------------------------------------------------------
+const PRICING_GOOGLE = {
+  'gemini-3-pro':          { input: 2,    output: 12 },
+  'gemini-3.1-pro':        { input: 2,    output: 12 },
+  'gemini-3.5-flash':      { input: 1.5,  output: 9 },
+  'gemini-3.1-flash-lite': { input: 0.25, output: 1.5 },
+  'gemini-3-flash':        { input: 0.5,  output: 3 },
+  'gemini-2.5-pro':        { input: 1.25, output: 10 }, // >200k prompt: 2.50/15 (not modelled)
+  'gemini-2.5-flash-lite': { input: 0.1,  output: 0.4 },
+  'gemini-2.5-flash':      { input: 0.3,  output: 2.5 },
+  // Fallback for unknown / new gemini strings (logged once, same as the others).
+  '__default__':           { input: 1.25, output: 10 },
+};
+const GOOGLE_CACHE_READ_MULT = 0.10;
+
+function priceForGoogle(model) {
+  let p = PRICING_GOOGLE[model];
+  if (!p && model) {
+    // Longest PRICING_GOOGLE key that prefixes the model string wins — so
+    // "gemini-2.5-flash-lite" beats "gemini-2.5-flash", and dated/-preview
+    // variants ("gemini-3-pro-preview-11-2025") price as their base model.
+    let best = '';
+    for (const key of Object.keys(PRICING_GOOGLE)) {
+      if (key !== '__default__' && model.startsWith(key) && key.length > best.length) best = key;
+    }
+    if (best) p = PRICING_GOOGLE[best];
+  }
+  if (!p) {
+    logUnknownModel(model);
+    p = PRICING_GOOGLE.__default__;
+  }
+  return p;
+}
+
+// ---------------------------------------------------------------------------
 // PATHS & FILE DISCOVERY
 // ---------------------------------------------------------------------------
 
@@ -456,6 +509,67 @@ function codexDir() {
 
 function codexSessionsRoot() {
   return path.join(codexDir(), 'sessions');
+}
+
+// --- Other agents (all read-only, same as ~/.claude) --------------------------
+// Pulse also ingests a few other coding agents whose local logs carry per-turn
+// model + token counts in a plain-JSON format we can read with Node builtins:
+// Gemini CLI, Continue, and Cline. Each shows up as its own `source`, only when
+// its logs are actually present on the machine.
+
+// Gemini CLI — ~/.gemini/tmp/<projectHash>/chats/session-*.jsonl (one JSON
+// record per line, with a `tokens` object and a `model`). GEMINI_DIR /
+// GEMINI_CLI_HOME relocate the home (mirrors Gemini CLI's own env var).
+function geminiDir() {
+  return process.env.GEMINI_DIR || process.env.GEMINI_CLI_HOME || path.join(os.homedir(), '.gemini');
+}
+function geminiChatsRoot() { return path.join(geminiDir(), 'tmp'); }
+
+// Continue — ~/.continue/dev_data/<version>/tokensGenerated.jsonl (one record
+// per generation: model/provider + promptTokens/generatedTokens). These are
+// Continue's own LOCAL estimates, not provider-billed, so entries are flagged
+// `estimate`. CONTINUE_DIR / CONTINUE_GLOBAL_DIR relocate the home.
+function continueDir() {
+  return process.env.CONTINUE_DIR || process.env.CONTINUE_GLOBAL_DIR || path.join(os.homedir(), '.continue');
+}
+function continueDevDataRoot() { return path.join(continueDir(), 'dev_data'); }
+
+// Cline — a VS Code extension: task history lives under the editor's
+// globalStorage/saoudrizwan.claude-dev/tasks/<taskId>/ as ui_messages.json (+
+// task_metadata.json). We probe every common editor flavour × OS. CLINE_DIR
+// overrides with an explicit .../saoudrizwan.claude-dev directory.
+const CLINE_EXT_ID = 'saoudrizwan.claude-dev';
+function clineExtensionDirs() {
+  if (process.env.CLINE_DIR) return [process.env.CLINE_DIR];
+  const home = os.homedir();
+  const editors = ['Code', 'Code - Insiders', 'VSCodium', 'Cursor', 'Windsurf'];
+  const bases = [];
+  if (process.platform === 'win32') {
+    const appdata = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+    for (const e of editors) bases.push(path.join(appdata, e, 'User', 'globalStorage'));
+  } else if (process.platform === 'darwin') {
+    for (const e of editors) bases.push(path.join(home, 'Library', 'Application Support', e, 'User', 'globalStorage'));
+  } else {
+    for (const e of editors) bases.push(path.join(home, '.config', e, 'User', 'globalStorage'));
+    bases.push(path.join(home, '.vscode-server', 'data', 'User', 'globalStorage')); // remote/SSH/WSL
+  }
+  return bases.map((b) => path.join(b, CLINE_EXT_ID));
+}
+// Discover every Cline task's ui_messages.json across all editor flavours.
+// READ-ONLY: readdirSync/statSync only.
+function clineTaskFiles() {
+  const out = [];
+  for (const ext of clineExtensionDirs()) {
+    const tasksDir = path.join(ext, 'tasks');
+    let ids;
+    try { ids = fs.readdirSync(tasksDir, { withFileTypes: true }); } catch (_) { continue; }
+    for (const d of ids) {
+      if (!d.isDirectory()) continue;
+      const f = path.join(tasksDir, d.name, 'ui_messages.json');
+      try { if (fs.statSync(f).isFile()) out.push(f); } catch (_) { /* no ui_messages here */ }
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -829,6 +943,170 @@ function parseCodexFile(filePath) {
   return { entries, sessionMeta, ultracodeSessions: [], effortEvents: [], codexRateSnapshot: rateSnapshot };
 }
 
+// ---------------------------------------------------------------------------
+// OTHER-AGENT PARSERS — Gemini CLI, Continue, Cline.
+// Each returns the same shape as parseFile/parseCodexFile so parseAll() can
+// treat them uniformly. Read-only; formats reverse-engineered from each tool's
+// open-source logs. Entries carry provider/source so pricing + breakdowns route
+// correctly; a synthetic per-agent fixture covers each in test/.
+// ---------------------------------------------------------------------------
+
+// Shared skeleton for an agent usage entry (fields every aggregation reads).
+function agentEntry(fields) {
+  return {
+    speed: 'standard', serviceTier: 'standard',
+    inputTokens: 0, outputTokens: 0, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0,
+    webSearches: 0, sessionId: '', project: '', messageId: '', requestId: '',
+    ...fields,
+  };
+}
+
+// Gemini CLI — one JSON object per line; usage records carry a `tokens` object
+// ({input,output,cached,thoughts,tool}) and a `model`. `input` includes cached
+// (Gemini usageMetadata semantics), so uncached input = input - cached; thoughts
+// (reasoning) bill as output. Dedup within a file by message id, LAST write wins
+// (an edited turn is rewritten in place).
+function parseGeminiFile(filePath) {
+  let raw;
+  try { raw = fs.readFileSync(filePath, 'utf8'); } catch (_) { return null; }
+  const byId = new Map();
+  let idx = 0;
+  for (const line of raw.split('\n')) {
+    if (!line) continue;
+    let rec;
+    try { rec = JSON.parse(line); } catch (_) { continue; }
+    if (!rec || typeof rec !== 'object') continue;
+    const tk = rec.tokens;
+    if (!tk || typeof tk !== 'object') continue; // not a usage record
+    const ts = Date.parse(rec.timestamp || rec.time || rec.createdAt || rec.date || '');
+    if (!isFinite(ts)) continue;
+    const cached = num(tk.cached);
+    const input = num(tk.input);
+    const inputTokens = Math.max(0, input - cached) + num(tk.tool);
+    const outputTokens = num(tk.output) + num(tk.thoughts);
+    if (inputTokens + outputTokens + cached <= 0) continue;
+    const sid = String(rec.sessionId || rec.session_id || path.basename(filePath, '.jsonl'));
+    const id = String(rec.id || rec.messageId || (sid + ':' + ts + ':' + idx));
+    idx++;
+    const e = agentEntry({
+      ts, provider: 'google', model: String(rec.model || 'gemini-unknown'), source: 'gemini',
+      inputTokens, outputTokens, cacheRead: cached,
+      sessionId: sid, project: String(rec.projectRoot || rec.cwd || ''),
+      messageId: id, key: 'gm:' + id,
+    });
+    e.cost = costForEntry(e);
+    byId.set(id, e); // last write wins
+  }
+  const entries = [...byId.values()];
+  const sessionMeta = {};
+  for (const e of entries) if (e.sessionId && !sessionMeta[e.sessionId]) sessionMeta[e.sessionId] = { firstUserText: '', project: e.project };
+  return { entries, sessionMeta, ultracodeSessions: [], effortEvents: [] };
+}
+
+// Continue — dev_data/<ver>/tokensGenerated.jsonl. Records are camelCase
+// (model/provider + promptTokens/generatedTokens), sometimes wrapped in a
+// {name,timestamp,data} envelope. These are Continue's OWN local estimates (not
+// provider-billed), so every entry is flagged `estimate`. No per-record id →
+// dedup by file path + line index (stable across appends).
+function parseContinueFile(filePath) {
+  let raw;
+  try { raw = fs.readFileSync(filePath, 'utf8'); } catch (_) { return null; }
+  const entries = [];
+  let i = -1;
+  for (const line of raw.split('\n')) {
+    i++;
+    if (!line) continue;
+    let rec;
+    try { rec = JSON.parse(line); } catch (_) { continue; }
+    if (!rec || typeof rec !== 'object') continue;
+    const d = (rec.data && typeof rec.data === 'object') ? rec.data : rec;
+    const model = String(d.model || rec.model || '');
+    const promptTokens = num(d.promptTokens);
+    const generatedTokens = num(d.generatedTokens);
+    if (!model || promptTokens + generatedTokens <= 0) continue;
+    const ts = Date.parse(rec.timestamp || d.timestamp || rec.eventTime || d.eventTime || '');
+    if (!isFinite(ts)) continue;
+    const prov = String(d.provider || rec.provider || '').toLowerCase();
+    const m = model.toLowerCase();
+    // Route to the right pricing table by model family (Continue's provider
+    // label is a hint; the model string is authoritative).
+    let provider = 'anthropic';
+    if (/^(gpt|o[0-9]|codex|chatgpt)/.test(m) || prov.includes('openai')) provider = 'openai';
+    else if (m.startsWith('gemini') || prov.includes('google') || prov.includes('gemini')) provider = 'google';
+    const e = agentEntry({
+      ts, provider, model, source: 'continue', estimate: true,
+      inputTokens: promptTokens, outputTokens: generatedTokens,
+      sessionId: 'continue', project: '',
+      key: 'ct:' + filePath + ':' + i,
+    });
+    e.cost = costForEntry(e);
+    entries.push(e);
+  }
+  const sessionMeta = entries.length ? { continue: { firstUserText: '', project: '' } } : {};
+  return { entries, sessionMeta, ultracodeSessions: [], effortEvents: [] };
+}
+
+// Cline — VS Code extension. ui_messages.json is a JSON array of ClineMessage;
+// usage lives on `api_req_started` "say" messages whose `text` is itself a
+// JSON string ({tokensIn,tokensOut,cacheWrites,cacheReads,cost}). Cline records
+// its OWN cost, so we use it directly. Model id comes from the sibling
+// task_metadata.json `model_usage` (state-snapshot: latest entry ≤ req.ts).
+function parseClineFile(filePath) {
+  let raw;
+  try { raw = fs.readFileSync(filePath, 'utf8'); } catch (_) { return null; }
+  let msgs;
+  try { msgs = JSON.parse(raw); } catch (_) { return { entries: [], sessionMeta: {}, ultracodeSessions: [], effortEvents: [] }; }
+  if (!Array.isArray(msgs)) return { entries: [], sessionMeta: {}, ultracodeSessions: [], effortEvents: [] };
+  const taskDir = path.dirname(filePath);
+  const taskId = path.basename(taskDir);
+  // Model usage timeline from task_metadata.json (optional; older tasks lack it).
+  let modelUsage = [];
+  try {
+    const meta = JSON.parse(fs.readFileSync(path.join(taskDir, 'task_metadata.json'), 'utf8'));
+    if (meta && Array.isArray(meta.model_usage)) {
+      modelUsage = meta.model_usage
+        .filter((u) => u && typeof u.ts === 'number' && u.model_id)
+        .sort((a, b) => a.ts - b.ts);
+    }
+  } catch (_) { /* no metadata → model stays unknown */ }
+  const modelAt = (ts) => {
+    let m = null;
+    for (const u of modelUsage) { if (u.ts <= ts) m = u.model_id; else break; }
+    return m || (modelUsage.length ? modelUsage[0].model_id : 'unknown');
+  };
+  const entries = [];
+  let i = -1;
+  for (const msg of msgs) {
+    i++;
+    if (!msg || msg.type !== 'say' || msg.say !== 'api_req_started' || typeof msg.text !== 'string') continue;
+    let info;
+    try { info = JSON.parse(msg.text); } catch (_) { continue; }
+    if (!info || typeof info !== 'object') continue;
+    const ts = num(msg.ts);
+    if (!ts) continue;
+    const tokensIn = num(info.tokensIn), tokensOut = num(info.tokensOut);
+    const cacheWrites = num(info.cacheWrites), cacheReads = num(info.cacheReads);
+    if (tokensIn + tokensOut + cacheWrites + cacheReads <= 0) continue;
+    const model = String(modelAt(ts));
+    const mlow = model.toLowerCase();
+    let provider = 'anthropic';
+    if (/^(gpt|o[0-9]|codex|chatgpt)/.test(mlow)) provider = 'openai';
+    else if (mlow.startsWith('gemini')) provider = 'google';
+    const e = agentEntry({
+      ts, provider, model, source: 'cline',
+      inputTokens: tokensIn, outputTokens: tokensOut, cacheWrite5m: cacheWrites, cacheRead: cacheReads,
+      sessionId: taskId, project: '',
+      key: 'cl:' + taskId + ':' + ts + ':' + i,
+    });
+    // Cline records real per-request cost — trust it; fall back to our estimate
+    // only if it's absent (very old tasks).
+    e.cost = (typeof info.cost === 'number' && isFinite(info.cost)) ? info.cost : costForEntry(e);
+    entries.push(e);
+  }
+  const sessionMeta = entries.length ? { [taskId]: { firstUserText: '', project: '' } } : {};
+  return { entries, sessionMeta, ultracodeSessions: [], effortEvents: [] };
+}
+
 // Turn the newest Codex rate_limits snapshot into display buckets. resets_at
 // has been absolute (epoch seconds or ISO) in recent versions and
 // resets_in_seconds (relative to the event) in older ones — handle all three.
@@ -876,9 +1154,18 @@ function parseAll() {
   const walkT0 = Date.now();
   const claudeFiles = walkJsonl(projectsRoot());
   const codexFiles = walkJsonl(codexSessionsRoot());
+  // Other agents — each discovered independently; absent dirs yield [] so the
+  // source simply never appears. Continue's dev_data holds several .jsonl kinds;
+  // only tokensGenerated.jsonl carries usage. Cline's are .json (not .jsonl).
+  const geminiFiles = walkJsonl(geminiChatsRoot());
+  const continueFiles = walkJsonl(continueDevDataRoot()).filter((f) => path.basename(f) === 'tokensGenerated.jsonl');
+  const clineFiles = clineTaskFiles();
   const walkMs = Date.now() - walkT0;
   const codexSet = new Set(codexFiles);
-  const files = claudeFiles.concat(codexFiles);
+  const geminiSet = new Set(geminiFiles);
+  const continueSet = new Set(continueFiles);
+  const clineSet = new Set(clineFiles);
+  const files = claudeFiles.concat(codexFiles, geminiFiles, continueFiles, clineFiles);
   const liveFiles = new Set(files);
 
   let parsed = 0, skipped = 0, failed = 0;
@@ -890,7 +1177,11 @@ function parseAll() {
       skipped++;
       continue;
     }
-    const result = codexSet.has(f) ? parseCodexFile(f) : parseFile(f);
+    const result = codexSet.has(f) ? parseCodexFile(f)
+      : geminiSet.has(f) ? parseGeminiFile(f)
+      : continueSet.has(f) ? parseContinueFile(f)
+      : clineSet.has(f) ? parseClineFile(f)
+      : parseFile(f);
     if (result === null) {
       // Read failed this cycle (e.g. locked mid-write). Keep any prior cached
       // entries and retry next request — do NOT cache the failure.
@@ -940,7 +1231,12 @@ function parseAll() {
     }
   }
 
-  console.log(`[pulse] walked ${files.length} file(s) (${claudeFiles.length} claude, ${codexFiles.length} codex) in ${walkMs}ms; parsed ${parsed}, skipped ${skipped} (cached)${failed ? `, ${failed} unreadable (will retry)` : ''}; ${merged.length} unique usage records`);
+  const agentBits = [];
+  if (geminiFiles.length) agentBits.push(`${geminiFiles.length} gemini`);
+  if (continueFiles.length) agentBits.push(`${continueFiles.length} continue`);
+  if (clineFiles.length) agentBits.push(`${clineFiles.length} cline`);
+  const agentStr = agentBits.length ? ', ' + agentBits.join(', ') : '';
+  console.log(`[pulse] walked ${files.length} file(s) (${claudeFiles.length} claude, ${codexFiles.length} codex${agentStr}) in ${walkMs}ms; parsed ${parsed}, skipped ${skipped} (cached)${failed ? `, ${failed} unreadable (will retry)` : ''}; ${merged.length} unique usage records`);
   return {
     entries: merged, sessionMeta, ultracodeSessions, effortEvents,
     fileCount: files.length, codexFileCount: codexFiles.length,
@@ -1215,8 +1511,13 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
 
   // ---- distinct sources / models across all time (stable color assignment) ----
   const allSourcesSet = new Set(), allModelsSet = new Set(), monthKeySet = new Set();
+  // Sources whose numbers are self-reported estimates (e.g. Continue computes
+  // its own token counts locally rather than reading provider billing). The UI
+  // badges these so they aren't read as metered truth.
+  const estimatedSourcesSet = new Set();
   for (const e of asc) {
     allSourcesSet.add(e.source);
+    if (e.estimate) estimatedSourcesSet.add(e.source);
     if (!HIDDEN_MODELS.has(e.model)) allModelsSet.add(e.model);
     monthKeySet.add(localDateStr(e.ts).slice(0, 7)); // YYYY-MM
   }
@@ -1354,6 +1655,7 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
     periods,
     allSources,
     allModels,
+    estimatedSources: Array.from(estimatedSourcesSet).sort(),
     recentSessions,
     heatmap,
     pricing: buildPricingView(now),

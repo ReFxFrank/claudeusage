@@ -126,6 +126,7 @@ export default function App() {
         active={srcFilter}
         colorMap={colorMaps.src}
         onChange={updateFilter}
+        estimated={data.estimatedSources || []}
       />
       {!data.hasData ? (
         <>
@@ -148,9 +149,10 @@ export default function App() {
 // Multi-select source filter chips. Empty selection = all sources. The list
 // always shows every source ever seen (server keeps allSources unfiltered),
 // so a chip never disappears because you just filtered it out.
-function SourceFilter({ allSources, active, colorMap, onChange }) {
+function SourceFilter({ allSources, active, colorMap, onChange, estimated = [] }) {
   if (!allSources || allSources.length < 2) return null;
   const set = new Set(active);
+  const est = new Set(estimated);
   function toggle(s) {
     const next = new Set(set);
     if (next.has(s)) next.delete(s); else next.add(s);
@@ -171,9 +173,9 @@ function SourceFilter({ allSources, active, colorMap, onChange }) {
           key={s}
           className={'sfchip' + (set.has(s) ? ' on' : '')}
           onClick={() => toggle(s)}
-          title={set.has(s) ? 'Click to remove from filter' : 'Click to show only selected sources'}
+          title={(est.has(s) ? 'Locally-estimated usage (not provider-billed). ' : '') + (set.has(s) ? 'Click to remove from filter' : 'Click to show only selected sources')}
         >
-          <i style={{ background: colorMap.get(s) }} />{s}
+          <i style={{ background: colorMap.get(s) }} />{s}{est.has(s) && <sup className="estmark">est</sup>}
         </button>
       ))}
       {set.size > 0 && (
@@ -272,7 +274,7 @@ function Dashboard({ data, colorMaps, periodKey, setPeriodKey, onStopped, gfx })
             ) : (
               <Card delay={0.28}>
                 <h2>By source · {period.label}</h2>
-                <BarList rows={sourceRows} />
+                <BarList rows={sourceRows} estimatedSources={data.estimatedSources || []} />
               </Card>
             )}
           </div>
