@@ -171,7 +171,10 @@ svg { display: block; }
 }
 .hbar .nm { color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 8px; }
 .hbar .nm i { width: 9px; height: 9px; border-radius: 3px; flex: none; }
-.hbar .track { background: rgba(255, 255, 255, 0.05); border-radius: 6px; height: 18px; overflow: hidden; }
+/* very faint trough so a shorter bar reads as a shorter bar, not a colored bar
+   followed by a prominent empty rectangle (the "extra space" after low-spend
+   rows). Kept just visible enough to anchor tiny bars. */
+.hbar .track { background: rgba(255, 255, 255, 0.028); border-radius: 6px; height: 18px; overflow: hidden; }
 .hbar .track > i { display: block; height: 100%; border-radius: 6px; }
 .hbar .v { font-family: var(--mono); font-size: 12.5px; color: var(--text); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
 .hbar .v small { color: var(--text-3); }

@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.13.2
+
+- **Reverted to per-model bar colors** — the by-model bars are distinctly
+  colored per model again (the provider-family coloring from v1.13.1 is undone).
+- **Softened the empty track** — the unfilled part of a bar's track was a fairly
+  prominent light rectangle, so a lower-spend row (e.g. a model at 75% of the
+  top spender) looked like a bar followed by "extra space". The track trough is
+  now very faint, so a shorter bar simply reads as a shorter bar. Bar length
+  still encodes spend.
+
 ## v1.13.1
 
 - **By-model bars are colored by provider now:** the bar fill for each model

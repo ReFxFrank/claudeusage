@@ -269,19 +269,13 @@ export function BarList({ rows, modelLogos = false }) {
           costly model (or vice-versa) never looks mis-sized next to its numbers. */}
       <div className="barhint">bar length = spend · numbers show $ · tokens</div>
       <div className="hbars">
-      {rows.map((r) => {
-        // by-model: color the bar by PROVIDER FAMILY (matching the row's logo),
-        // so all Claude models share one color, all OpenAI another, etc. — the
-        // per-model palette (r.color) is arbitrary and reads as a random
-        // rainbow here. by-source keeps r.color (it matches the filter chips).
-        const barColor = modelLogos ? FAMILY_META[modelFamily(r.name)].color : r.color;
-        return (
+      {rows.map((r) => (
         <InfoTip key={r.name} text={`${modelLogos ? FAMILY_META[modelFamily(r.name)].label + ' · ' : ''}${r.name} — ${money2(r.cost)} · ${tokens(r.tokens)} tokens · ${num(r.messages)} msgs`}>
           <div className="hbar">
             <div className="nm">{modelLogos ? <ModelLogo model={r.name} size={16} /> : <i style={{ background: r.color }} />}{r.name}</div>
             <div className="track">
               <motion.i
-                style={{ background: barColor }}
+                style={{ background: r.color }}
                 initial={{ width: 0 }}
                 animate={{ width: Math.max(2, (r.cost / max) * 100) + '%' }}
                 transition={{ duration: 0.7, ease: EASE }}
@@ -294,8 +288,7 @@ export function BarList({ rows, modelLogos = false }) {
             </span>
           </div>
         </InfoTip>
-        );
-      })}
+      ))}
       </div>
     </>
   );
