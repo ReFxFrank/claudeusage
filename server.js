@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.15.0';
+const PULSE_VERSION = '1.15.1';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -1092,7 +1092,10 @@ function parseClineFile(filePath) {
     try { info = JSON.parse(msg.text); } catch (_) { continue; }
     if (!info || typeof info !== 'object') continue;
     const ts = num(msg.ts);
-    if (!ts) continue;
+    // ts is a raw numeric epoch here (not via Date.parse), so reject anything
+    // outside JS's valid Date range — an out-of-range value from a corrupt file
+    // would otherwise become NaN in `new Date(ts)` downstream (e.g. the heatmap).
+    if (!ts || !isFinite(new Date(ts).getTime())) continue;
     const tokensIn = num(info.tokensIn), tokensOut = num(info.tokensOut);
     const cacheWrites = num(info.cacheWrites), cacheReads = num(info.cacheReads);
     if (tokensIn + tokensOut + cacheWrites + cacheReads <= 0) continue;
@@ -1548,20 +1551,15 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
   // Note: Claude Code prunes transcripts after ~cleanupPeriodDays (30 by
   // default), so long windows only show what is still on disk — documented.
   const periods = [];
-
-  // Totals for an arbitrary day-list, merging live entries with the archive the
-  // same way buildPeriod does (live day wins, archive fills the gaps). Used to
-  // compute each period's PREVIOUS equal-length window for the delta chip.
-  const sumWindow = (dayList) => {
-    const daySet = new Set(dayList);
-    let cost = 0, tokens = 0, messages = 0;
-    for (const e of asc) if (daySet.has(localDateStr(e.ts))) { cost += e.cost; tokens += tokensOf(e); messages++; }
-    for (const ds of dayList) {
-      if (liveDays.has(ds)) continue; // live already counted this day
-      const rec = hist.byDay[ds];
-      if (rec && Array.isArray(rec.rows)) for (const r of rec.rows) { cost += +r.cost || 0; tokens += +r.tokens || 0; messages += +r.messages || 0; }
-    }
-    return { cost, tokens, messages };
+  // Build a period's totals for an arbitrary window and return just the
+  // {cost,tokens,messages} — reusing buildPeriod so the PREVIOUS window is
+  // merged (live + archive, per cell) exactly like a period's OWN cost. This
+  // keeps the delta chip apples-to-apples with the figure it's compared against.
+  const windowTotals = (dayList) => {
+    const set = new Set(dayList);
+    const inWin = asc.filter((e) => set.has(localDateStr(e.ts)));
+    const p = buildPeriod('_prev', '', inWin, dayList, allSources, hist, liveDays);
+    return { cost: p.cost, tokens: p.tokens, messages: p.messages };
   };
 
   // Rolling windows (newest first in the dropdown).
@@ -1576,7 +1574,7 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
     const p = buildPeriod(key, label, inWin, days, allSources, hist, liveDays);
     // Previous equal-length window: the nDays immediately before this one.
     const prevAnchor = new Date(now); prevAnchor.setDate(prevAnchor.getDate() - nDays);
-    p.prev = sumWindow(localDayStartsBack(prevAnchor.getTime(), nDays));
+    p.prev = windowTotals(localDayStartsBack(prevAnchor.getTime(), nDays));
     periods.push(p);
   }
   // One period per calendar month present in the data (newest first, capped).
@@ -1585,11 +1583,21 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
     const [y, m] = mk.split('-').map(Number);
     const days = monthDayList(y, m - 1);
     const inMonth = asc.filter((e) => localDateStr(e.ts).slice(0, 7) === mk);
-    const p = buildPeriod(mk, monthLabel(y, m), inMonth, days, allSources, hist, liveDays);
-    // Previous calendar month.
-    const prevM = new Date(y, m - 2, 1);
-    p.prev = sumWindow(monthDayList(prevM.getFullYear(), prevM.getMonth()));
-    periods.push(p);
+    periods.push(buildPeriod(mk, monthLabel(y, m), inMonth, days, allSources, hist, liveDays));
+  }
+  // Month-over-month prev: a month's previous window IS the prior calendar
+  // month, already built above as its own period — reference it directly (same
+  // merge, no recompute). Missing prior month (no data / beyond the cap) → zero.
+  const periodByKey = {};
+  for (const p of periods) periodByKey[p.key] = p;
+  for (const mk of months) {
+    const [y, m] = mk.split('-').map(Number);
+    const pm = new Date(y, m - 2, 1);
+    const pmk = pm.getFullYear() + '-' + String(pm.getMonth() + 1).padStart(2, '0');
+    const prev = periodByKey[pmk];
+    periodByKey[mk].prev = prev
+      ? { cost: prev.cost, tokens: prev.tokens, messages: prev.messages }
+      : { cost: 0, tokens: 0, messages: 0 };
   }
 
   // ---- recent sessions (newest first) ----
@@ -1673,7 +1681,9 @@ function aggregate(entries, sessionMeta, desktopTitles, now, modesBySession, ult
   let hmMaxCost = 0, hmMaxMsgs = 0;
   for (const e of asc) {
     const d = new Date(e.ts);
-    const cell = hmGrid[d.getDay()][d.getHours()];
+    const dow = d.getDay(), hr = d.getHours();
+    if (!(dow >= 0 && dow <= 6) || !(hr >= 0 && hr <= 23)) continue; // guard a bad ts (Invalid Date → NaN index)
+    const cell = hmGrid[dow][hr];
     cell.cost += e.cost; cell.tokens += tokensOf(e); cell.messages++;
     if (cell.cost > hmMaxCost) hmMaxCost = cell.cost;
     if (cell.messages > hmMaxMsgs) hmMaxMsgs = cell.messages;
@@ -3316,7 +3326,10 @@ function discordPresenceStart() {
   if (discordStart != null) return discordStart;
   let prev = null;
   try { prev = JSON.parse(fs.readFileSync(discordStartFilePath(), 'utf8')); } catch (_) {}
-  const validPrev = prev && typeof prev.start === 'number' && isFinite(prev.start) && prev.start <= SERVER_START;
+  // Anchor must be a plausible recent epoch: not in the future, and not absurdly
+  // old (a corrupt/zero value would otherwise show a nonsense multi-year timer).
+  const validPrev = prev && typeof prev.start === 'number' && isFinite(prev.start)
+    && prev.start <= SERVER_START && (SERVER_START - prev.start) < 400 * 86400e3;
   const recent = validPrev && typeof prev.savedAt === 'number' && (SERVER_START - prev.savedAt) < DISCORD_START_GRACE_MS;
   // Reuse the old anchor across an update relaunch or a brief restart; else
   // begin a fresh session at this process's start.

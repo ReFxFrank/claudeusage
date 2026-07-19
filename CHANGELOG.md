@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.15.1
+
+Hardening pass (adversarial review of the recent features):
+
+- **Fix: a corrupt Cline log could 500 the whole dashboard.** Cline read its
+  timestamp as a raw number, so an out-of-range epoch from a hand-edited/corrupt
+  `ui_messages.json` slipped through and made the activity heatmap throw
+  (`new Date(bad).getDay()` → NaN index), returning HTTP 500 for every request.
+  Now the timestamp is range-checked at parse time, and the heatmap skips any
+  out-of-range entry defensively — a corrupt file in a read-only dir can never
+  take down the dashboard.
+- **Comparison baseline is now exact.** The period-delta's "previous window" is
+  computed through the same code path as a period's own cost, so the two figures
+  always use an identical live/archive merge (a month's previous window simply
+  references the prior month's already-computed total).
+- **Discord timer anchor sanity-bounded.** A corrupt persisted anchor that's
+  absurdly old (or zero) is now rejected, so the elapsed timer can't show a
+  nonsense multi-year age.
+
 ## v1.15.0
 
 - **Budget goals:** set a monthly or weekly spend target and watch a progress

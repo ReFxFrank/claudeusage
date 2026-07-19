@@ -43,6 +43,10 @@ fs.writeFileSync(K+"/tasks/task-001/ui_messages.json", JSON.stringify([
   { type:"say", say:"text", ts: now-7*60e3, text:"hello" },
   { type:"say", say:"api_req_started", ts: now-6*60e3,
     text: JSON.stringify({ tokensIn:150000, tokensOut:80000, cacheWrites:20000, cacheReads:500000, cost:2.34 }) },
+  // corrupt: out-of-range epoch (beyond JS Date range). MUST be skipped, never
+  // crash the heatmap / 500 the whole dashboard.
+  { type:"say", say:"api_req_started", ts: 1e16,
+    text: JSON.stringify({ tokensIn:999999, tokensOut:0, cacheWrites:0, cacheReads:0, cost:99 }) },
 ]));
 fs.writeFileSync(K+"/tasks/task-001/task_metadata.json", JSON.stringify({
   files_in_context: [],
@@ -94,6 +98,11 @@ ok(!/unknown model.*gemini-3-pro/i.test(log), "no unknown-model warning for gemi
 const cb=s.currentBlock;
 ok(cb && near(cb.cost,5.00), "5h block = Claude Code only ($5.00), agents excluded (got "+(cb&&cb.cost)+")");
 ok(!s.selfCheck || !(s.selfCheck.issues||[]).some(x=>/block entries/.test(x)), "selfCheck: block-entry count matches (no agent leak)");
+// corrupt Cline ts (1e16) must be skipped, not counted and not a 500:
+ok(s.hasData===true && Array.isArray(s.periods), "summary served OK despite a corrupt Cline ts (no 500)");
+ok(bs.cline && bs.cline.tokens===750000, "corrupt out-of-range Cline entry skipped (tokens still 750k, not +999999)");
+ok(bs.cline && near(bs.cline.cost,2.34), "corrupt entry did not inflate cline cost (still 2.34)");
+ok(s.heatmap && s.heatmap.grid && s.heatmap.grid.length===7, "heatmap built fine (bad ts guarded)");
 process.exit(fail);
 ' "$TMP"
 RES=$?
