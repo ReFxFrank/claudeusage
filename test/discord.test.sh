@@ -9,7 +9,17 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 CL=$TMP/claude; PH=$TMP/pulse
-IPC=$TMP/dipc/discord-ipc-0
+# Windows has no unix-domain listeners — the mock listens on a named pipe there
+# and PULSE_DISCORD_IPC points the server at the same name (no server change;
+# discordIpcCandidates returns the override verbatim on every platform).
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    IPC='\\.\pipe\pulse-dipc-'$$
+    NOIPC='\\.\pipe\pulse-dipc-none-'$$ ;;
+  *)
+    IPC=$TMP/dipc/discord-ipc-0
+    NOIPC=$TMP/dipc/nonexistent-sock ;;
+esac
 DLOG=$TMP/discord-frames.log
 mkdir -p "$CL/projects/demo" "$PH"
 echo '{"discordPresence": true, "discordClientId": "123456789012345678"}' > "$PH/config.json"
@@ -55,7 +65,7 @@ kill $SRV 2>/dev/null; wait $SRV 2>/dev/null
 
 # --- D: discord not running
 echo '{"discordPresence": true, "discordClientId": "123456789012345678"}' > "$PH/config.json"
-start_pulse "$TMP/dipc/nonexistent-sock"
+start_pulse "$NOIPC"
 curl -s "http://127.0.0.1:$PORT/api/summary" > "$TMP/d.json"
 kill $SRV 2>/dev/null; wait $SRV 2>/dev/null
 kill $MOCK 2>/dev/null

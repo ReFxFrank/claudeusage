@@ -5,8 +5,13 @@ const fs = require('fs');
 const path = require('path');
 const SOCK = process.argv[2];
 const LOG = process.argv[3];
-fs.mkdirSync(path.dirname(SOCK), { recursive: true });
-try { fs.unlinkSync(SOCK); } catch (_) {}
+// A Windows named pipe (\\.\pipe\… / \\?\pipe\…) is not a filesystem path —
+// no directory to create, nothing to unlink (the pipe dies with the process).
+const isPipe = /^\\\\[.?]\\pipe\\/.test(SOCK);
+if (!isPipe) {
+  fs.mkdirSync(path.dirname(SOCK), { recursive: true });
+  try { fs.unlinkSync(SOCK); } catch (_) {}
+}
 fs.writeFileSync(LOG, '');
 const frame = (op, obj) => {
   const j = Buffer.from(JSON.stringify(obj));

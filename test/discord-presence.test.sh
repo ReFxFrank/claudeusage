@@ -40,12 +40,18 @@ seed() { # $1=PH  $2=savedAtOffsetMs (0 = now)
   node -e 'const fs=require("fs");fs.writeFileSync(process.argv[1]+"/discord-presence.json",JSON.stringify({start:Number(process.argv[2]),savedAt:Date.now()-Number(process.argv[3])}))' "$1" "$OLD" "$2"
 }
 
+# Windows: named pipes instead of unix-socket paths (see discord.test.sh).
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) I1='\\.\pipe\pulse-dp-'$$'-1'; I2='\\.\pipe\pulse-dp-'$$'-2'; I3='\\.\pipe\pulse-dp-'$$'-3' ;;
+  *)                    I1=$TMP/ipc1;                  I2=$TMP/ipc2;                  I3=$TMP/ipc3 ;;
+esac
+
 # 1: recent heartbeat -> reuse OLD
-PH1=$TMP/ph1; seed "$PH1" 0;            run_case "$PH1" "$TMP/f1.log" "$TMP/ipc1" ""
+PH1=$TMP/ph1; seed "$PH1" 0;            run_case "$PH1" "$TMP/f1.log" "$I1" ""
 # 2: stale heartbeat (30m > 10m grace), normal start -> reset (fresh, not OLD)
-PH2=$TMP/ph2; seed "$PH2" $((30*60000)); run_case "$PH2" "$TMP/f2.log" "$TMP/ipc2" ""
+PH2=$TMP/ph2; seed "$PH2" $((30*60000)); run_case "$PH2" "$TMP/f2.log" "$I2" ""
 # 3: stale heartbeat but --after-update -> reuse OLD anyway
-PH3=$TMP/ph3; seed "$PH3" $((30*60000)); run_case "$PH3" "$TMP/f3.log" "$TMP/ipc3" "--after-update"
+PH3=$TMP/ph3; seed "$PH3" $((30*60000)); run_case "$PH3" "$TMP/f3.log" "$I3" "--after-update"
 
 node -e '
 const fs=require("fs"); const TMP=process.argv[1], OLD=Number(process.argv[2]), FLOOR=Number(process.argv[3]);

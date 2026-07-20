@@ -3,8 +3,13 @@
 # provider family (used for the by-model logos, labels, and colors).
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-node --input-type=module -e '
-import { modelFamily, FAMILY_META } from "'"$ROOT"'/web/src/model-families.js";
+# Dynamic import via pathToFileURL so the module resolves on every platform —
+# a Git-Bash-style $ROOT (/c/Users/…) interpolated into a static import breaks
+# on Windows; passed as argv it arrives as a native path and converts cleanly.
+node -e '
+const { pathToFileURL } = require("node:url");
+const modPath = require("node:path").join(process.argv[1], "web", "src", "model-families.js");
+import(pathToFileURL(modPath).href).then(({ modelFamily, FAMILY_META }) => {
 let fail = 0;
 const ok = (c, m) => { console.log((c ? "PASS" : "FAIL") + "  " + m); if (!c) fail = 1; };
 const CASES = {
@@ -29,7 +34,8 @@ for (const [model, fam] of Object.entries(CASES)) {
 ok(modelFamily("codex-auto-review") === "openai", "codex-auto-review -> openai");
 ok(modelFamily("gpt-5.4-mini") === "openai", "mini suffix stays openai");
 process.exit(fail);
-'
+}).catch((e) => { console.error("FAIL  could not import model-families.js:", e.message); process.exit(1); });
+' "$ROOT"
 RES=$?
 echo "---- exit $RES"
 exit $RES
