@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.18.0
+
+- **Roo Code as a source (zero setup):** Pulse now ingests **Roo Code** — the
+  widely-used Cline fork — straight from its VS Code task history
+  (`globalStorage/rooveterinaryinc.roo-cline` or `….roo-code`, across Code /
+  Insiders / VSCodium / Cursor / Windsurf and remote installs; `ROO_DIR`
+  override for testing). Like Cline, Roo records its **own per-request cost**,
+  which Pulse trusts verbatim. The model column uses the request's own
+  `modelId` when Roo recorded one; otherwise it falls back to the task
+  metadata timeline, or a coarse `unknown` label (Roo keeps precise model
+  state in a SQLite DB, which Pulse deliberately doesn't read — zero-dep
+  rule). Roo usage is excluded from the Claude 5-hour block like every other
+  agent source, even when it ran a Claude model.
+- **Spend-anomaly alert (opt-in):** set `{"anomalyAlerts": true}` in
+  `~/.pulse/config.json` and Pulse flags a day whose spend blows past your own
+  baseline — *"today $62.40 — 3.1× your recent daily average ($20.10)"* — at
+  the top of the alerts banner, with the same one-click desktop notification
+  as the limit alerts (fired once per day). The baseline is the average of
+  your **active** days (spend > 0) in the trailing 30, so quiet weekends
+  don't skew it; it needs at least 5 active days of history and at least $5
+  of spend today before it will ever fire, and the trigger ratio is tunable
+  via `anomalyMultiplier` (default 3, floor 1.5). Respects the master
+  `"alerts": false` switch.
+
 ## v1.17.0
 
 - **Export your data — CSV and JSON:** a new **⇩ export** menu next to the

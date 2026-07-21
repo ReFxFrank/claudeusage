@@ -48,7 +48,7 @@ the old name; git remotes redirect).
 |---|---|
 | Claude transcript parsing | `parseFile`, `normalize`, `dedupKey`, mtime `fileCache` |
 | Codex rollout parsing | `parseCodexFile` (token_count deltas, `turn_context` model+effort, replay-safe keys, `preModelEntries` backfill) |
-| Other-agent parsing | `parseGeminiFile` (`~/.gemini/tmp/*/chats/session-*.jsonl`; `tokens{input(incl cached),output,cached,thoughts,tool}`+`model`; dedup by id last-write-wins; provider `google`/source `gemini`), `parseContinueFile` (`~/.continue/dev_data/*/tokensGenerated.jsonl`; camelCase, `{name,timestamp,data}` envelope; LOCAL ESTIMATES → `estimate:true`; dedup by path+lineIndex; provider inferred from model), `parseClineFile` (VS Code `globalStorage/saoudrizwan.claude-dev/tasks/*/ui_messages.json`; `api_req_started.text` is stringified JSON `{tokensIn,tokensOut,cacheWrites,cacheReads,cost}`; uses Cline's OWN `cost`; model from sibling `task_metadata.json` `model_usage` state-snapshot); `agentEntry` skeleton; `clineTaskFiles`/`clineExtensionDirs` (Code/Insiders/VSCodium/Cursor/Windsurf + `.vscode-server`); all dispatched by set-membership in `parseAll` |
+| Other-agent parsing | `parseGeminiFile` (`~/.gemini/tmp/*/chats/session-*.jsonl`; `tokens{input(incl cached),output,cached,thoughts,tool}`+`model`; dedup by id last-write-wins; provider `google`/source `gemini`), `parseContinueFile` (`~/.continue/dev_data/*/tokensGenerated.jsonl`; camelCase, `{name,timestamp,data}` envelope; LOCAL ESTIMATES → `estimate:true`; dedup by path+lineIndex; provider inferred from model), `parseClineFile` (VS Code `globalStorage/saoudrizwan.claude-dev/tasks/*/ui_messages.json`; `api_req_started.text` is stringified JSON `{tokensIn,tokensOut,cacheWrites,cacheReads,cost}`; uses Cline's OWN `cost`; model from sibling `task_metadata.json` `model_usage` state-snapshot, else `unknown`), Roo Code = same function w/ `source='roo'` (Cline fork, same layout; ext ids `rooveterinaryinc.roo-cline` + `.roo-code`, `rooExtensionDirs`/`rooTaskFiles`, `ROO_DIR` override; trusts Roo's recorded cost; model precedence ROO-ONLY record-level `modelId` > metadata timeline > `unknown` — the record probe is deliberately not applied to Cline; precise Roo model state is in a SQLite DB Pulse deliberately doesn't read); `agentEntry` skeleton; `taskFilesUnder`/`vscodeGlobalStorageBases` (Code/Insiders/VSCodium/Cursor/Windsurf + `.vscode-server`); all dispatched by set-membership in `parseAll` |
 | Pricing | `PRICING` (Anthropic + Zhipu/Z.ai `glm-*`, which arrive via Claude Code's Z.ai Anthropic-compatible proxy and price through the Claude path w/ longest-prefix match), `PRICING_OPENAI` (exact rows; prefix fallback ONLY for date suffixes — OpenAI `-mini`/`-pro` are different models), `PRICING_GOOGLE` (`priceForGoogle`, longest-prefix but fallback ONLY for snapshot suffixes — `-preview`/`-latest`/`-exp`/`-thinking` + optional date/build stamp, or a bare `-001`-style stamp; a tier/modality remainder like `-lite` or `-preview-tts` falls to the LOGGED default, never the parent tier's rate; cached=10% of input; July 2026 Gemini rates); `costForEntry` dispatches `openai`→OpenAI, `google`→Google, else Claude path; unknown models log once + `__default__` |
 | Effort chips | `parseLocalCommand`, `parseEffortStdout` (interactive-picker confirmation echoes), `mergeModes`, `annotateModes` (state-snapshot join: latest event ≤ entry.ts; `parseEffort` is the immutable Codex-side input); CLI: `--effort-setup` (`effortSetup`) PRINTS (never writes) a Claude Code settings.json hook snippet, `--mode-hook` (`runModeHook`) is that hook — writes the settings-persisted effort level to the `~/.pulse` modes sidecar (covers the cross-session case transcript parsing can't; still never writes under `~/.claude`) |
 | Analytics breakdowns | `buildPeriod` also emits per-period `effortSpend` (bucket = ultracode\|level\|default), `byProject` (top 30 by cost + `(other)`), `liveCost` — all LIVE-only (archive keeps no per-entry effort/project); UI: `EffortSpendBars`/`ProjectBars` (panels.jsx) |
@@ -65,7 +65,7 @@ the old name; git remotes redirect).
 | Community reach | `refreshReach`/`reachForPayload` → `payload.reach` = `{downloads, stars, fetchedAt, repo}` from PUBLIC GitHub only (sum of every release's asset `download_count` + repo `stargazers_count`); last-good retention per counter; scheduled beside `checkForUpdate` (startup + 6h) and gated by the SAME opt-out (`updateCheck`/`--no-update-check`); 6h cache (`PULSE_REACH_CACHE_MS`), endpoints overridable (`PULSE_REACH_API`, `PULSE_REACH_REPO_API`); NOT a phone-home — nothing about the user is sent; UI: `.reachpill` in the header (App.jsx) |
 | Windows daemon | `--daemon-child`, `windowsHide`, `~/.pulse/pulse.log`, `--stop`, `--install-shortcuts` |
 | Status line | `--statusline` (reads Claude Code's stdin JSON, fetches slim `/api/statusline` from the running server via `~/.pulse/server.json` port, prints an ANSI line; fail-open, always exit 0), `statuslineData`/`statuslineMemo` (3s), `--statusline-setup` prints the settings.json snippet (never writes `~/.claude`); `NO_COLOR` respected |
-| Limit alerts | `computeAlerts(meters, codexMeters)` → `payload.alerts` (both Claude buckets + Codex snapshot buckets ≥ lowest threshold, deduped by `provider:key`, provider-labelled, sorted most-urgent-first, skips `stale`; **drops maxed windows** — rounded pct ≥ 100 is a reached limit, not "approaching", so it's excluded from the banner + notifications though it still shows in the meter gauges); `alertsEnabled()` (`{"alerts": false}` off), `alertThresholds()` (config `alertThresholds`, default `[80,95]`); UI: `AlertsBar` (panels.jsx) + browser notifications in lib.js (`fireAlertNotifications` dedups via `localStorage` key `pulse-alerted`, alertKey `key\|threshold\|resetsAt`) |
+| Limit alerts | `computeAlerts(meters, codexMeters)` → `payload.alerts` (both Claude buckets + Codex snapshot buckets ≥ lowest threshold, deduped by `provider:key`, provider-labelled, sorted most-urgent-first, skips `stale`; **drops maxed windows** — rounded pct ≥ 100 is a reached limit, not "approaching", so it's excluded from the banner + notifications though it still shows in the meter gauges); `alertsEnabled()` (`{"alerts": false}` off), `alertThresholds()` (config `alertThresholds`, default `[80,95]`); **spend anomaly (opt-in)**: `computeSpendAnomaly(periods, now)` unshifted onto alerts — fires when today ≥ multiplier × mean of ACTIVE prior days in last30 (≥5 active days, today ≥ $5); config `anomalyAlerts === true` + `anomalyMultiplier` (default 3, floor 1.5); row has `kind:'anomaly'`, `detail`, `ratio`, pct null, date-keyed `pulse:anomaly:YYYY-MM-DD` so notifications fire once/day; UI: `AlertsBar` (panels.jsx — anomaly rows render `detail`, headline "Unusual spend —" when anomaly-only) + browser notifications in lib.js (`fireAlertNotifications` dedups via `localStorage` key `pulse-alerted`, alertKey `key\|threshold\|resetsAt`; anomaly body uses `detail`) |
 | Activity heatmap | `aggregate` builds `payload.heatmap` = `{grid:[7][24]{cost,tokens,messages}, maxCost, maxMessages}` from `asc` entries via local `getDay()`/`getHours()`; LIVE-only (archive keeps no per-hour detail); UI: `Heatmap` (panels.jsx), gated on `heatmap.maxCost > 0` |
 
 ## Config (`~/.pulse/config.json`) and env overrides
@@ -77,13 +77,15 @@ the chatgpt.com call), `discordPresence`, `discordClientId`,
 `discordClaudeImage`/`discordCodexImage` (per-provider large_image overrides),
 `history` (retention; on
 unless `false`), `alerts` (limit alerts; on unless `false`), `alertThresholds`
-(array of pct 1–100; default `[80,95]`), `budget` (USD spend target; unset =
+(array of pct 1–100; default `[80,95]`), `anomalyAlerts` (spend-anomaly alert;
+opt-in, `=== true` only) + `anomalyMultiplier` (trigger ratio; default 3, floor
+1.5), `budget` (USD spend target; unset =
 off) + `budgetPeriod` (`month`|`week`, default month; set via `/api/budget/set`),
 `updateCheck`.
 
 Test/dev env hooks: `PULSE_HOME`, `CLAUDE_DIR`/`CLAUDE_CONFIG_DIR`,
 `CODEX_DIR`/`CODEX_HOME`, `GEMINI_DIR`/`GEMINI_CLI_HOME`,
-`CONTINUE_DIR`/`CONTINUE_GLOBAL_DIR`, `CLINE_DIR`, `PULSE_HISTORY_DIR`, `PULSE_REACH_API`,
+`CONTINUE_DIR`/`CONTINUE_GLOBAL_DIR`, `CLINE_DIR`, `ROO_DIR`, `PULSE_HISTORY_DIR`, `PULSE_REACH_API`,
 `PULSE_REACH_REPO_API`, `PULSE_REACH_CACHE_MS`, `PULSE_METERS_API`,
 `PULSE_METERS_CACHE_MS`, `PULSE_CODEX_USAGE_API`, `PULSE_CODEX_USAGE_CACHE_MS`,
 `PULSE_DISCORD_IPC`, `PULSE_DISCORD_TICK_MS`, `PULSE_DISCORD_ROTATE_MS`,
@@ -139,17 +141,21 @@ Test/dev env hooks: `PULSE_HOME`, `CLAUDE_DIR`/`CLAUDE_CONFIG_DIR`,
 - Model-family recognition lives in `web/src/model-families.js` (pure
   classifier + `FAMILY_META`, unit-tested) and `web/src/logos.jsx` (SVG marks);
   it only classifies models that reach Pulse.
-- Other-agent ingestion (v1.14.0): Gemini CLI, Continue, Cline are read from
-  their own local logs and folded in as sources (see the Other-agent parsing
-  row). Feasibility gate = JSON/JSONL + default-on + Node-builtin-readable.
+- Other-agent ingestion (v1.14.0; Roo Code added v1.18.0): Gemini CLI,
+  Continue, Cline, and Roo are read from their own local logs and folded in as
+  sources (see the Other-agent parsing row). Feasibility gate = JSON/JSONL +
+  default-on + Node-builtin-readable.
   Reverse-engineered format specifics worth remembering: Gemini `input`
   INCLUDES `cached`; Continue numbers are LOCAL ESTIMATES (badged `est`), not
   provider billing; Cline's `text` is double-encoded JSON and it records its own
-  `cost` (trust it). NOT feasible under the zero-dep rule (all SQLite-only):
+  `cost` (trust it); Roo shares Cline's task layout (it's a fork) and also
+  records its own cost — the per-request model id is `modelId` on the record
+  when present, else task metadata, else a coarse `unknown` (Roo's exact model
+  state lives in a SQLite DB we deliberately don't read). NOT feasible under
+  the zero-dep rule (all SQLite-only):
   **Crush** (`crush.db`), **Goose** (`sessions.db`, v1.10+), **opencode** (v1.16+
   switched JSON→SQLite; only ≤1.15 was JSON). **Aider**'s exact per-call tokens
   need its `--analytics-log` opt-in (default history is rounded markdown).
-  **Roo Code** exposes tokens but the model id lives in a SQLite state DB, so
-  only the coarse family is recoverable from files. Adding any of these later
+  Adding the SQLite-only agents later
   means shipping a SQLite reader or raising the Node floor — deliberately not
   done.

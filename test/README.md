@@ -24,12 +24,13 @@ bash test/discord.test.sh     # one suite
 | `model-families.test.sh` | Model-string → provider-family classifier (Anthropic/OpenAI/Google/DeepSeek/GLM/Meta/xAI/Qwen/Mistral/Cohere/other) + family metadata |
 | `meters-polling.test.sh` | Polling discipline: dashboard drives the usage-endpoint refresh; status line / Discord only trickle it (counting mock verifies no background polling) |
 | `meters-recheck.test.sh` | Account-connect "Recheck now": no-login while enabled, then the credential appears → `POST /api/meters/recheck` picks it up immediately with live buckets (no restart); token never logged |
-| `alerts.test.sh` | Limit alerts: Claude meters + Codex snapshot windows at/above a threshold are flagged, sorted most-urgent-first, provider-labelled; thresholds configurable; `alerts:false` disables |
+| `alerts.test.sh` | Limit alerts: Claude meters + Codex snapshot windows at/above a threshold are flagged, sorted most-urgent-first, provider-labelled; thresholds configurable; `alerts:false` disables. Spend anomaly: opt-in only, leads the list with ratio/detail, date-keyed, multiplier honoured, master switch wins |
 | `heatmap.test.sh` | Activity heatmap: entries land in the right weekday×hour cell (local time), cells sum cost/tokens/messages, max tracking correct |
 | `reach.test.sh` | Community reach: sums release-asset `download_count` across all releases + reads repo `stargazers_count` from public GitHub, exposes `payload.reach`, honours the update-check opt-out (flag + config) |
-| `agents.test.sh` | Other-agent ingestion: Gemini CLI / Continue / Cline read from their own log formats, folded in as sources, priced correctly (Gemini via Google table, Continue flagged `est`, Cline uses its recorded cost), dedup + no unknown-model warnings; the Claude 5h block excludes agent sources |
-| `budget.test.sh` | Budget goal: `payload.budget` spend/target/pct + ok/warn/over states, month vs week periods, POST set + clear |
+| `agents.test.sh` | Other-agent ingestion: Gemini CLI / Continue / Cline / Roo Code read from their own log formats, folded in as sources, priced correctly (Gemini via Google table, Continue flagged `est`, Cline + Roo use their recorded costs; Roo model precedence record `modelId` > metadata > `unknown`), dedup + no unknown-model warnings; the Claude 5h block excludes agent sources |
+| `budget.test.sh` | Budget goal: `payload.budget` spend/target/pct + ok/warn/over states, month vs week periods, month-end projection (`projected` = spent/elapsed, null for week), POST set + clear |
 | `comparison.test.sh` | Period-over-period: each period's `prev` = previous equal-length window totals (rolling N-day + calendar month), zero when no prior data |
+| `export.test.sh` | CSV/JSON export: daily/per-source columns + UTF-8 BOM, exact per-model costs, RFC-4180 quoting, `?sources=` scoping, attachment headers, 400/404 paths, foreign-Host 403 |
 
 Conventions when adding tests: fixture homes via `mktemp -d` + `CLAUDE_DIR` /
 `CODEX_DIR` / `PULSE_HOME` env; per-suite fixed port; fake tokens only, with

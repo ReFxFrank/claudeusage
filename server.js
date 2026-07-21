@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.17.0';
+const PULSE_VERSION = '1.18.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -33,7 +33,7 @@ let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
 // billing). Used to keep the Claude 5-hour block honest — it must count ONLY
 // Claude Code usage, never Codex or the other ingested agents. GLM stays in
 // (it flows through Claude Code itself).
-const AGENT_SOURCES = new Set(['codex', 'gemini', 'cline', 'continue']);
+const AGENT_SOURCES = new Set(['codex', 'gemini', 'cline', 'continue', 'roo']);
 // Sources whose numbers are self-reported estimates (Continue computes token
 // counts locally rather than reading provider billing). Constant so the "est"
 // badge survives after the live logs are pruned and only the archive remains.
@@ -559,9 +559,11 @@ function continueDevDataRoot() { return path.join(continueDir(), 'dev_data'); }
 // globalStorage/saoudrizwan.claude-dev/tasks/<taskId>/ as ui_messages.json (+
 // task_metadata.json). We probe every common editor flavour × OS. CLINE_DIR
 // overrides with an explicit .../saoudrizwan.claude-dev directory.
+// Roo Code is a Cline fork with the SAME task layout, under its own extension
+// ids (it shipped as roo-cline, later roo-code — probe both). ROO_DIR overrides.
 const CLINE_EXT_ID = 'saoudrizwan.claude-dev';
-function clineExtensionDirs() {
-  if (process.env.CLINE_DIR) return [process.env.CLINE_DIR];
+const ROO_EXT_IDS = ['rooveterinaryinc.roo-cline', 'rooveterinaryinc.roo-code'];
+function vscodeGlobalStorageBases() {
   const home = os.homedir();
   const editors = ['Code', 'Code - Insiders', 'VSCodium', 'Cursor', 'Windsurf'];
   const bases = [];
@@ -574,13 +576,23 @@ function clineExtensionDirs() {
     for (const e of editors) bases.push(path.join(home, '.config', e, 'User', 'globalStorage'));
     bases.push(path.join(home, '.vscode-server', 'data', 'User', 'globalStorage')); // remote/SSH/WSL
   }
-  return bases.map((b) => path.join(b, CLINE_EXT_ID));
+  return bases;
 }
-// Discover every Cline task's ui_messages.json across all editor flavours.
-// READ-ONLY: readdirSync/statSync only.
-function clineTaskFiles() {
+function clineExtensionDirs() {
+  if (process.env.CLINE_DIR) return [process.env.CLINE_DIR];
+  return vscodeGlobalStorageBases().map((b) => path.join(b, CLINE_EXT_ID));
+}
+function rooExtensionDirs() {
+  if (process.env.ROO_DIR) return [process.env.ROO_DIR];
   const out = [];
-  for (const ext of clineExtensionDirs()) {
+  for (const b of vscodeGlobalStorageBases()) for (const id of ROO_EXT_IDS) out.push(path.join(b, id));
+  return out;
+}
+// Discover every task's ui_messages.json under the given extension dirs.
+// READ-ONLY: readdirSync/statSync only.
+function taskFilesUnder(extDirs) {
+  const out = [];
+  for (const ext of extDirs) {
     const tasksDir = path.join(ext, 'tasks');
     let ids;
     try { ids = fs.readdirSync(tasksDir, { withFileTypes: true }); } catch (_) { continue; }
@@ -592,6 +604,8 @@ function clineTaskFiles() {
   }
   return out;
 }
+function clineTaskFiles() { return taskFilesUnder(clineExtensionDirs()); }
+function rooTaskFiles() { return taskFilesUnder(rooExtensionDirs()); }
 
 // ---------------------------------------------------------------------------
 // §3  RECORD ACCESSORS — read field names via small helpers with fallbacks.
@@ -1072,7 +1086,12 @@ function parseContinueFile(filePath) {
 // JSON string ({tokensIn,tokensOut,cacheWrites,cacheReads,cost}). Cline records
 // its OWN cost, so we use it directly. Model id comes from the sibling
 // task_metadata.json `model_usage` (state-snapshot: latest entry ≤ req.ts).
-function parseClineFile(filePath) {
+// Roo Code (a Cline fork) writes the same task layout, so it parses through
+// this same function with source 'roo'; if its api_req_started payload carries
+// a modelId, that wins over the metadata timeline (Roo keeps precise model
+// state in a SQLite DB Pulse deliberately does not read — zero-dep rule — so
+// tasks without either fall back to the 'unknown' label).
+function parseClineFile(filePath, source = 'cline') {
   let raw;
   try { raw = fs.readFileSync(filePath, 'utf8'); } catch (_) { return null; }
   let msgs;
@@ -1111,16 +1130,21 @@ function parseClineFile(filePath) {
     const tokensIn = num(info.tokensIn), tokensOut = num(info.tokensOut);
     const cacheWrites = num(info.cacheWrites), cacheReads = num(info.cacheReads);
     if (tokensIn + tokensOut + cacheWrites + cacheReads <= 0) continue;
-    const model = String(modelAt(ts));
+    // Roo can carry the model right on the request record; Cline relies on the
+    // metadata timeline. The record-level probe is ROO-ONLY so a future Cline
+    // that writes a modelId field with different semantics can't silently
+    // override the metadata path for existing Cline users.
+    const recModel = source === 'roo' && typeof info.modelId === 'string' && info.modelId ? info.modelId : null;
+    const model = String(recModel || modelAt(ts));
     const mlow = model.toLowerCase();
     let provider = 'anthropic';
     if (/^(gpt|o[0-9]|codex|chatgpt)/.test(mlow)) provider = 'openai';
     else if (mlow.startsWith('gemini')) provider = 'google';
     const e = agentEntry({
-      ts, provider, model, source: 'cline',
+      ts, provider, model, source,
       inputTokens: tokensIn, outputTokens: tokensOut, cacheWrite5m: cacheWrites, cacheRead: cacheReads,
       sessionId: taskId, project: '',
-      key: 'cl:' + taskId + ':' + ts + ':' + i,
+      key: source + ':' + taskId + ':' + ts + ':' + i,
     });
     // Cline records real per-request cost — trust it; fall back to our estimate
     // only if it's absent (very old tasks).
@@ -1184,12 +1208,14 @@ function parseAll() {
   const geminiFiles = walkJsonl(geminiChatsRoot());
   const continueFiles = walkJsonl(continueDevDataRoot()).filter((f) => path.basename(f) === 'tokensGenerated.jsonl');
   const clineFiles = clineTaskFiles();
+  const rooFiles = rooTaskFiles();
   const walkMs = Date.now() - walkT0;
   const codexSet = new Set(codexFiles);
   const geminiSet = new Set(geminiFiles);
   const continueSet = new Set(continueFiles);
   const clineSet = new Set(clineFiles);
-  const files = claudeFiles.concat(codexFiles, geminiFiles, continueFiles, clineFiles);
+  const rooSet = new Set(rooFiles);
+  const files = claudeFiles.concat(codexFiles, geminiFiles, continueFiles, clineFiles, rooFiles);
   const liveFiles = new Set(files);
 
   let parsed = 0, skipped = 0, failed = 0;
@@ -1205,6 +1231,7 @@ function parseAll() {
       : geminiSet.has(f) ? parseGeminiFile(f)
       : continueSet.has(f) ? parseContinueFile(f)
       : clineSet.has(f) ? parseClineFile(f)
+      : rooSet.has(f) ? parseClineFile(f, 'roo')
       : parseFile(f);
     if (result === null) {
       // Read failed this cycle (e.g. locked mid-write). Keep any prior cached
@@ -1259,6 +1286,7 @@ function parseAll() {
   if (geminiFiles.length) agentBits.push(`${geminiFiles.length} gemini`);
   if (continueFiles.length) agentBits.push(`${continueFiles.length} continue`);
   if (clineFiles.length) agentBits.push(`${clineFiles.length} cline`);
+  if (rooFiles.length) agentBits.push(`${rooFiles.length} roo`);
   const agentStr = agentBits.length ? ', ' + agentBits.join(', ') : '';
   console.log(`[pulse] walked ${files.length} file(s) (${claudeFiles.length} claude, ${codexFiles.length} codex${agentStr}) in ${walkMs}ms; parsed ${parsed}, skipped ${skipped} (cached)${failed ? `, ${failed} unreadable (will retry)` : ''}; ${merged.length} unique usage records`);
   return {
@@ -2249,6 +2277,16 @@ function buildSummary(sourceFilter, opts) {
   // Limit alerts: which windows are at/above a warning threshold right now.
   // Stateless — the dashboard de-dups notifications per reset cycle client-side.
   payload.alerts = computeAlerts(payload.meters, payload.codexMeters);
+  // Spend anomaly (opt-in) leads the list — a runaway day outranks a window
+  // that is merely approaching its limit. Computed ONLY on the unfiltered
+  // view: like the meter alerts it is an account-level signal, and a
+  // source-filtered baseline would fire spurious "unusual spend"
+  // notifications (and burn the once-per-day dedup) off a scope the wording
+  // never mentions.
+  if (!appliedFilter) {
+    const anomaly = computeSpendAnomaly(payload.periods, Date.now());
+    if (anomaly) payload.alerts.unshift(anomaly);
+  }
   // Discord Rich Presence status (opt-in) — state only, no work done here.
   payload.discord = discordForPayload();
   return payload;
@@ -2293,6 +2331,57 @@ function computeAlerts(meters, codexMeters) {
   // Most urgent first.
   out.sort((a, b) => b.pct - a.pct);
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// SPEND-ANOMALY ALERT (opt-in) — flags a day whose spend is far above the
+// user's own recent baseline (a runaway loop, an accidental ultracode
+// marathon). Baseline = mean of ACTIVE days (spend > 0) in the trailing-30d
+// window, excluding today — quiet weekends must not drag the average down and
+// cause false alarms. Requires a real history and real money before it will
+// ever fire; off unless {"anomalyAlerts": true} ({"anomalyMultiplier": N}
+// tunes the trigger ratio, default 3, floor 1.5). Rides the master `alerts`
+// switch and the same banner/notification plumbing as the limit alerts.
+// ---------------------------------------------------------------------------
+const ANOMALY_MIN_ACTIVE_DAYS = 5; // baseline needs at least this many active days
+const ANOMALY_MIN_TODAY_USD = 5;   // never flag pocket change
+function anomalyConfig() {
+  const c = readConfig();
+  // Coerce (a hand-edited "25" means 25) then CLAMP to the 1.5 floor — a user
+  // asking for 1.2 gets the most sensitive supported setting, not a silent
+  // reset to the default. Only non-numeric/absent falls back to 3.
+  const n = Number(c.anomalyMultiplier);
+  const m = isFinite(n) && n > 0 ? Math.max(1.5, n) : 3;
+  return { enabled: c.anomalyAlerts === true, multiplier: m };
+}
+function computeSpendAnomaly(periods, now) {
+  const { enabled, multiplier } = anomalyConfig();
+  if (!enabled || !alertsEnabled()) return null;
+  const p = (periods || []).find((x) => x.key === 'last30');
+  if (!p || !Array.isArray(p.daily)) return null;
+  const todayStr = localDateStr(now);
+  let today = 0;
+  const prior = [];
+  for (const d of p.daily) {
+    if (d.date === todayStr) today = d.total;
+    else if (d.date < todayStr && d.total > 0) prior.push(d.total);
+  }
+  if (prior.length < ANOMALY_MIN_ACTIVE_DAYS || today < ANOMALY_MIN_TODAY_USD) return null;
+  const baseline = prior.reduce((a, b) => a + b, 0) / prior.length;
+  if (!(baseline > 0) || today < baseline * multiplier) return null;
+  const ratio = today / baseline;
+  return {
+    // Date in the key → the client's notification dedup fires once per day.
+    key: 'pulse:anomaly:' + todayStr,
+    kind: 'anomaly',
+    provider: 'pulse',
+    label: "Today's spend",
+    detail: 'today $' + today.toFixed(2) + ' — ' + ratio.toFixed(1) + '× your recent daily average ($' + baseline.toFixed(2) + ')',
+    ratio, todayCost: today, baseline,
+    threshold: multiplier,
+    pct: null,
+    resetsAt: null,
+  };
 }
 
 // ---------------------------------------------------------------------------

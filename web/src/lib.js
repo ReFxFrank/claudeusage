@@ -214,7 +214,9 @@ export function fireAlertNotifications(alerts) {
     seen.add(k); changed = true;
     try {
       new Notification('Pulse — usage alert', {
-        body: `${a.label} is at ${Math.round(a.pct)}% (≥ ${a.threshold}%)`,
+        body: a.kind === 'anomaly'
+          ? `${a.label}: ${a.detail}`
+          : `${a.label} is at ${Math.round(a.pct)}% (≥ ${a.threshold}%)`,
         tag: 'pulse-' + a.key, // one live toast per window; escalation replaces it
       });
     } catch (_) {}

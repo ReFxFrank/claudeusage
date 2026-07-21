@@ -210,12 +210,17 @@ export function AlertsBar({ alerts, notifyState, onEnableNotify }) {
   if (!alerts || !alerts.length) return null;
   // Only windows still *approaching* a limit reach here — the server drops any
   // that are already maxed out (a limit you've hit isn't one you're nearing).
+  // Anomaly rows (opt-in spend spikes) carry their own `detail` text, no pct.
+  // Headline follows the mix: anomaly-only, limits-only, or both.
+  const hasAnomaly = alerts.some((a) => a.kind === 'anomaly');
+  const anomalyOnly = hasAnomaly && alerts.every((a) => a.kind === 'anomaly');
+  const headline = anomalyOnly ? 'Unusual spend —' : hasAnomaly ? 'Heads up —' : 'Approaching a limit —';
   return (
     <div className="alertbar" role="status">
       <span className="alertdot" />
       <span className="alerttxt">
-        <b>Approaching a limit —</b>{' '}
-        {alerts.map((a) => `${a.label} ${Math.round(a.pct)}%`).join(' · ')}
+        <b>{headline}</b>{' '}
+        {alerts.map((a) => (a.kind === 'anomaly' ? a.detail : `${a.label} ${Math.round(a.pct)}%`)).join(' · ')}
       </span>
       {notifyState === 'default' && (
         <button className="btn ghost albtn" onClick={onEnableNotify}>Enable desktop alerts</button>
