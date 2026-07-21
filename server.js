@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.22.1';
+const PULSE_VERSION = '1.23.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -4057,14 +4057,17 @@ function trayScript(port) {
 function trayStyle() {
   return readConfig().trayStyle === 'strip' ? 'strip' : 'icon';
 }
-// The taskbar STRIP (openusage-windows style): a slim borderless always-on-top
-// form positioned over the taskbar's right end — a colored status dot + text
-// rotating through pages (Claude 5h %, weekly %, Codex weekly %, today's $).
-// Drag to reposition (persisted to ~/.pulse/tray-strip.json; a <5px move
-// counts as a click); left-click opens the mini overview as an app window
-// anchored above the strip; right-click menu mirrors the icon tray. Same
-// mutex, version-handoff, trayEnabled self-exit, and statusline feed as the
-// icon style.
+// The taskbar STRIP v2 — parented INTO the taskbar (openusage-windows style):
+// the pill is SetParent()ed into Shell_TrayWnd, so it is genuinely part of the
+// taskbar — it hides when a fullscreen game hides the taskbar, follows
+// auto-hide, and clips into the band, instead of floating over everything as
+// a screen-space overlay. DPI-aware (SetProcessDPIAware + a 96-dpi scale
+// factor for all pixel sizes) so 4K/150% monitors position correctly. If the
+// taskbar window can't be found/parented, falls back to a floating topmost
+// pill that HIDES while a fullscreen app is foreground. An Explorer restart
+// destroys the parented window — the script relaunches itself unless the exit
+// was deliberate (wantExit). Same mutex, version/style handoff, trayEnabled
+// self-exit, and statusline feed as the icon style.
 function trayStripScript(port) {
   return [
     "$mtx = New-Object System.Threading.Mutex($false, 'PulseTray" + port + "')",
@@ -4073,29 +4076,33 @@ function trayStripScript(port) {
     "$myStyle = 'strip'",
     'Add-Type -AssemblyName System.Windows.Forms',
     'Add-Type -AssemblyName System.Drawing',
+    "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public struct PRECT{public int L,T,R,B;}public class PulseWin{[DllImport(\"user32.dll\",CharSet=CharSet.Unicode)]public static extern IntPtr FindWindowW(string c,string w);[DllImport(\"user32.dll\")]public static extern IntPtr SetParent(IntPtr c,IntPtr p);[DllImport(\"user32.dll\")]public static extern bool GetClientRect(IntPtr h,out PRECT r);[DllImport(\"user32.dll\")]public static extern bool GetWindowRect(IntPtr h,out PRECT r);[DllImport(\"user32.dll\")]public static extern bool IsWindow(IntPtr h);[DllImport(\"user32.dll\")]public static extern bool SetProcessDPIAware();[DllImport(\"user32.dll\")]public static extern IntPtr GetForegroundWindow();[DllImport(\"user32.dll\")]public static extern int GetWindowLong(IntPtr h,int i);[DllImport(\"user32.dll\")]public static extern int SetWindowLong(IntPtr h,int i,int v);}'",
+    '[void][PulseWin]::SetProcessDPIAware()',
+    '$k = 1.0',
+    'try { $g = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero); $k = $g.DpiX / 96.0; $g.Dispose() } catch {}',
     "$base = 'http://127.0.0.1:" + port + "'",
     "$posFile = Join-Path (Split-Path -Parent $PSCommandPath) 'tray-strip.json'",
+    '$savedRight = -1; $savedX = -1; $savedY = -1',
+    'if (Test-Path $posFile) { try {',
+    '  $saved = Get-Content -Raw $posFile -ErrorAction Stop | ConvertFrom-Json',
+    "  if ($saved.mode -eq 'taskbar' -and $saved.right -ge 0) { $savedRight = [int]$saved.right }",
+    "  if ($saved.mode -eq 'float' -and $saved.x -ge 0) { $savedX = [int]$saved.x; $savedY = [int]$saved.y }",
+    '} catch {} }',
     '$scr = [System.Windows.Forms.Screen]::PrimaryScreen',
-    '$tbH = $scr.Bounds.Height - $scr.WorkingArea.Height',
-    'if ($tbH -lt 24 -or $tbH -gt 96) { $tbH = 48 } # side/top/hidden taskbar -> float above the corner',
-    '$H = [Math]::Min(34, $tbH - 6); if ($H -lt 24) { $H = 24 }',
-    '$W = 190',
+    '$W = [int](190 * $k)',
+    '$H = [int](30 * $k)',
     '$form = New-Object System.Windows.Forms.Form',
     "$form.FormBorderStyle = 'None'",
-    '$form.TopMost = $true',
     '$form.ShowInTaskbar = $false',
     "$form.StartPosition = 'Manual'",
     '$form.Size = New-Object System.Drawing.Size -ArgumentList $W, $H',
     "$form.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#14131c')",
-    '$x = $scr.WorkingArea.Right - $W - 260',
-    '$y = $scr.Bounds.Bottom - $tbH + [int](($tbH - $H) / 2)',
-    'if ($scr.Bounds.Height -eq $scr.WorkingArea.Height) { $y = $scr.WorkingArea.Bottom - $H - 8 }',
-    'if (Test-Path $posFile) { try {',
-    '  $saved = Get-Content -Raw $posFile -ErrorAction Stop | ConvertFrom-Json',
-    '  if ($saved.x -ge 0 -and $saved.x -lt ($scr.Bounds.Width - 40) -and $saved.y -ge 0 -and $saved.y -lt $scr.Bounds.Height) { $x = $saved.x; $y = $saved.y }',
-    '} catch {} }',
-    '$form.Location = New-Object System.Drawing.Point -ArgumentList $x, $y',
-    // Rounded pill silhouette so it reads as a widget, not a gray box.
+    // Float-mode default position (used only when taskbar parenting fails):
+    // bottom-right, just above the working-area edge.
+    '$fx = $scr.WorkingArea.Right - $W - [int](260 * $k)',
+    '$fy = $scr.WorkingArea.Bottom - $H - [int](8 * $k)',
+    'if ($savedX -ge 0 -and $savedX -lt ($scr.Bounds.Width - 40) -and $savedY -ge 0 -and $savedY -lt $scr.Bounds.Height) { $fx = $savedX; $fy = $savedY }',
+    '$form.Location = New-Object System.Drawing.Point -ArgumentList $fx, $fy',
     '$gp = New-Object System.Drawing.Drawing2D.GraphicsPath',
     '$r = [int]($H / 2)',
     '$gp.AddArc(0, 0, $r * 2, $r * 2, 90, 180)',
@@ -4103,20 +4110,20 @@ function trayStripScript(port) {
     '$gp.CloseFigure()',
     '$form.Region = New-Object System.Drawing.Region -ArgumentList $gp',
     '$dot = New-Object System.Windows.Forms.Label',
-    "$dot.Text = [char]0x25CF",
+    '$dot.Text = [char]0x25CF',
     "$dot.Font = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 10, ([System.Drawing.FontStyle]::Bold)",
     "$dot.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#9b8cff')",
     '$dot.AutoSize = $false',
-    '$dot.Size = New-Object System.Drawing.Size -ArgumentList 22, $H',
-    '$dot.Location = New-Object System.Drawing.Point -ArgumentList 8, 0',
+    '$dot.Size = New-Object System.Drawing.Size -ArgumentList ([int](22 * $k)), $H',
+    '$dot.Location = New-Object System.Drawing.Point -ArgumentList ([int](8 * $k)), 0',
     "$dot.TextAlign = 'MiddleCenter'",
     '$lbl = New-Object System.Windows.Forms.Label',
     "$lbl.Text = 'Pulse'",
     "$lbl.Font = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 9",
     "$lbl.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#e8e6f2')",
     '$lbl.AutoSize = $false',
-    '$lbl.Size = New-Object System.Drawing.Size -ArgumentList ($W - 34), $H',
-    '$lbl.Location = New-Object System.Drawing.Point -ArgumentList 28, 0',
+    '$lbl.Size = New-Object System.Drawing.Size -ArgumentList ($W - [int](34 * $k)), $H',
+    '$lbl.Location = New-Object System.Drawing.Point -ArgumentList ([int](28 * $k)), 0',
     "$lbl.TextAlign = 'MiddleLeft'",
     '$form.Controls.Add($dot)',
     '$form.Controls.Add($lbl)',
@@ -4124,10 +4131,35 @@ function trayStripScript(port) {
     '$script:pageIdx = 0',
     '$script:fails = 0',
     '$script:dotHex = @()',
+    '$script:wantExit = $false',
+    '$script:parented = $false',
+    '$script:trayWnd = [IntPtr]::Zero',
+    // Parent the pill INTO the taskbar so it lives and dies with it: hides
+    // with fullscreen apps, follows auto-hide, clips to the band.
+    'function Attach-ToTaskbar {',
+    "  $t = [PulseWin]::FindWindowW('Shell_TrayWnd', $null)",
+    '  if ($t -eq [IntPtr]::Zero) { return $false }',
+    '  $cr = New-Object PRECT',
+    '  [void][PulseWin]::GetClientRect($t, [ref]$cr)',
+    '  if ($cr.B -lt 20 -or $cr.R -lt 400) { return $false }',
+    '  $form.TopMost = $false',
+    '  $st = [PulseWin]::GetWindowLong($form.Handle, -16)',
+    '  [void][PulseWin]::SetWindowLong($form.Handle, -16, ($st -bor 0x40000000))',
+    '  if ([PulseWin]::SetParent($form.Handle, $t) -eq [IntPtr]::Zero) { return $false }',
+    '  $ro = if ($savedRight -ge 0) { $savedRight } else { [int](330 * $k) }',
+    '  $px = [Math]::Max(0, $cr.R - $W - $ro)',
+    '  $py = [Math]::Max(0, [int](($cr.B - $form.Height) / 2))',
+    '  $form.Location = New-Object System.Drawing.Point -ArgumentList $px, $py',
+    '  $script:trayWnd = $t',
+    '  $script:parented = $true',
+    '  return $true',
+    '}',
     'function Open-PulseMini {',
-    '  $px = [Math]::Max(0, $form.Location.X - 100)',
-    '  $py = [Math]::Max(0, $scr.WorkingArea.Bottom - 780)',
-    "  try { Start-Process 'msedge' -ArgumentList ('--app=' + $base + '/#mini'), '--window-size=380,760', ('--window-position=' + $px + ',' + $py) -ErrorAction Stop }",
+    '  $wr = New-Object PRECT',
+    '  [void][PulseWin]::GetWindowRect($form.Handle, [ref]$wr)',
+    '  $px = [Math]::Max(0, $wr.L - [int](100 * $k))',
+    '  $py = [Math]::Max(0, $wr.T - [int](780 * $k))',
+    "  try { Start-Process 'msedge' -ArgumentList ('--app=' + $base + '/#mini'), ('--window-size=' + [int](380 * $k) + ',' + [int](760 * $k)), ('--window-position=' + $px + ',' + $py) -ErrorAction Stop }",
     '  catch { Start-Process ($base + \'/#mini\') }',
     '}',
     'function Show-PulsePage {',
@@ -4141,10 +4173,10 @@ function trayStripScript(port) {
     'function Update-PulseStrip {',
     '  try {',
     "    $s = Invoke-RestMethod -Uri ($base + '/api/statusline') -TimeoutSec 3",
-    '    if ($s.trayEnabled -eq $false) { [System.Windows.Forms.Application]::Exit(); return }',
+    '    if ($s.trayEnabled -eq $false) { $script:wantExit = $true; [System.Windows.Forms.Application]::Exit(); return }',
     '    if (($s.version -and $s.version -ne $myVer) -or ($s.trayStyle -and $s.trayStyle -ne $myStyle)) {',
     "      Start-Process 'powershell.exe' -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $PSCommandPath",
-    '      [System.Windows.Forms.Application]::Exit(); return',
+    '      $script:wantExit = $true; [System.Windows.Forms.Application]::Exit(); return',
     '    }',
     '    $p = @(); $c = @()',
     '    $m = $s.meters',
@@ -4156,17 +4188,13 @@ function trayStripScript(port) {
     "    if ($p.Count -eq 0) { $p = @('Pulse'); $c = @('#9b8cff') }",
     '    $script:pages = $p; $script:dotHex = $c',
     '    if ($script:pageIdx -ge $p.Count) { $script:pageIdx = 0 }',
-    // Reassert every tick: an Explorer restart rebuilds the taskbar ABOVE
-    // existing topmost windows — this keeps the pill from vanishing behind it.
-    '    $form.TopMost = $true',
     '    $script:fails = 0',
     '  } catch {',
     '    $script:fails = $script:fails + 1',
     "    $script:pages = @('server not responding'); $script:dotHex = @('#f27878'); $script:pageIdx = 0",
-    '    if ($script:fails -ge 6) { [System.Windows.Forms.Application]::Exit() }',
+    '    if ($script:fails -ge 6) { $script:wantExit = $true; [System.Windows.Forms.Application]::Exit() }',
     '  }',
     '}',
-    // Drag anywhere on the strip; a tiny move is a click -> open the panel.
     '$script:dragStart = $null; $script:formStart = $null; $script:moved = $false',
     '$down = {',
     '  if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) {',
@@ -4180,13 +4208,28 @@ function trayStripScript(port) {
     '    $cur = [System.Windows.Forms.Cursor]::Position',
     '    $dx = $cur.X - $script:dragStart.X; $dy = $cur.Y - $script:dragStart.Y',
     '    if ([Math]::Abs($dx) -gt 4 -or [Math]::Abs($dy) -gt 4) { $script:moved = $true }',
-    '    if ($script:moved) { $form.Location = New-Object System.Drawing.Point -ArgumentList ($script:formStart.X + $dx), ($script:formStart.Y + $dy) }',
+    '    if ($script:moved) {',
+    '      $nx = $script:formStart.X + $dx; $ny = $script:formStart.Y + $dy',
+    '      if ($script:parented) {',
+    '        $cr = New-Object PRECT; [void][PulseWin]::GetClientRect($script:trayWnd, [ref]$cr)',
+    '        $nx = [Math]::Max(0, [Math]::Min($nx, $cr.R - $W))',
+    '        $ny = [Math]::Max(0, [Math]::Min($ny, $cr.B - $form.Height))',
+    '      }',
+    '      $form.Location = New-Object System.Drawing.Point -ArgumentList $nx, $ny',
+    '    }',
     '  }',
     '}',
     '$up = {',
     '  if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) {',
     '    if ($script:moved) {',
-    '      try { @{ x = $form.Location.X; y = $form.Location.Y } | ConvertTo-Json | Set-Content -Path $posFile } catch {}',
+    '      try {',
+    '        if ($script:parented) {',
+    '          $cr = New-Object PRECT; [void][PulseWin]::GetClientRect($script:trayWnd, [ref]$cr)',
+    "          @{ mode = 'taskbar'; right = [Math]::Max(0, $cr.R - $form.Location.X - $W) } | ConvertTo-Json | Set-Content -Path $posFile",
+    '        } else {',
+    "          @{ mode = 'float'; x = $form.Location.X; y = $form.Location.Y } | ConvertTo-Json | Set-Content -Path $posFile",
+    '        }',
+    '      } catch {}',
     '    } else { Open-PulseMini }',
     '    $script:dragStart = $null',
     '  }',
@@ -4199,8 +4242,8 @@ function trayStripScript(port) {
     "[void]$menu.Items.Add('Open mini overview', $null, { Open-PulseMini })",
     "[void]$menu.Items.Add('Refresh now', $null, { Update-PulseStrip; Show-PulsePage })",
     "[void]$menu.Items.Add('-')",
-    "[void]$menu.Items.Add('Stop Pulse', $null, { try { Invoke-RestMethod -Method Post -Uri ($base + '/api/shutdown') -Headers @{ 'X-Pulse' = '1' } -TimeoutSec 3 | Out-Null } catch {}; [System.Windows.Forms.Application]::Exit() })",
-    "[void]$menu.Items.Add('Exit strip', $null, { [System.Windows.Forms.Application]::Exit() })",
+    "[void]$menu.Items.Add('Stop Pulse', $null, { try { Invoke-RestMethod -Method Post -Uri ($base + '/api/shutdown') -Headers @{ 'X-Pulse' = '1' } -TimeoutSec 3 | Out-Null } catch {}; $script:wantExit = $true; [System.Windows.Forms.Application]::Exit() })",
+    "[void]$menu.Items.Add('Exit strip', $null, { $script:wantExit = $true; [System.Windows.Forms.Application]::Exit() })",
     '$form.ContextMenuStrip = $menu',
     '$dataTimer = New-Object System.Windows.Forms.Timer',
     '$dataTimer.Interval = 30000',
@@ -4208,14 +4251,40 @@ function trayStripScript(port) {
     '$pageTimer = New-Object System.Windows.Forms.Timer',
     '$pageTimer.Interval = 4000',
     '$pageTimer.add_Tick({ Show-PulsePage })',
+    // Watchdog: parented — exit (and be relaunched) if Explorer/taskbar went
+    // away; float fallback — hide over fullscreen apps, stay topmost otherwise.
+    '$visTimer = New-Object System.Windows.Forms.Timer',
+    '$visTimer.Interval = 1500',
+    '$visTimer.add_Tick({',
+    '  if ($script:parented) {',
+    '    if (-not [PulseWin]::IsWindow($script:trayWnd)) { [System.Windows.Forms.Application]::Exit() }',
+    '    return',
+    '  }',
+    '  $fg = [PulseWin]::GetForegroundWindow()',
+    '  if ($fg -eq $form.Handle) { return }',
+    '  $fr = New-Object PRECT',
+    '  [void][PulseWin]::GetWindowRect($fg, [ref]$fr)',
+    '  $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds',
+    '  $isFull = ($fr.L -le $b.Left) -and ($fr.T -le $b.Top) -and ($fr.R -ge $b.Right) -and ($fr.B -ge $b.Bottom)',
+    '  if ($isFull) { if ($form.Visible) { $form.Hide() } }',
+    '  else { if (-not $form.Visible) { $form.Show() }; $form.TopMost = $true }',
+    '})',
     'Update-PulseStrip',
     'Show-PulsePage',
     '$dataTimer.Start()',
     '$pageTimer.Start()',
     '$form.Show()',
+    'if (-not (Attach-ToTaskbar)) { $form.TopMost = $true }',
+    '$visTimer.Start()',
     '[System.Windows.Forms.Application]::Run($form)',
+    // Explorer restart destroys a taskbar-parented window and ends the message
+    // loop — relaunch unless the exit was deliberate.
+    'if (-not $script:wantExit) {',
+    "  Start-Process 'powershell.exe' -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $PSCommandPath",
+    '}',
   ].join('\r\n') + '\r\n';
 }
+
 
 function startTray(port) {
   trayDesired = true;

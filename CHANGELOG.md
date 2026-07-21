@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.23.0
+
+- **The strip is now part of the taskbar, not an overlay.** v1.22's strip was
+  an always-on-top window, so it floated over everything — including
+  fullscreen games. It is now **parented into the taskbar itself**
+  (`Shell_TrayWnd`): it hides when a fullscreen app hides the taskbar,
+  follows auto-hide, and clips into the band like a native element. The
+  script is DPI-aware (correct position and size on 4K / scaled monitors),
+  survives Explorer restarts (the destroyed child window relaunches itself),
+  and when taskbar parenting isn't possible it falls back to a floating pill
+  that **hides itself while a fullscreen app is foreground** instead of
+  drawing over it. Dragging inside the taskbar persists as a right-edge
+  offset so your spot survives resolution changes.
+
 ## v1.22.1
 
 - **Taskbar-strip polish** from a live debugging session: the first run no

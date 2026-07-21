@@ -86,10 +86,14 @@ opt-in, `=== true` only) + `anomalyMultiplier` (trigger ratio; default 3, floor
 1.5), `budget` (USD spend target; unset =
 off) + `budgetPeriod` (`month`|`week`, default month; set via `/api/budget/set`),
 `tray` (Windows notification-area icon; also `--tray`) + `trayStyle`
-(`icon` default \| `strip` — always-on-top taskbar pill, openusage-style;
-`trayStripScript`, position persisted to `~/.pulse/tray-strip.json`, style
-switches hand off via statusline `trayStyle` mismatch → relaunch; enable route
-accepts `?style=`), `updateCheck`.
+(`icon` default \| `strip` — a pill PARENTED INTO `Shell_TrayWnd` via
+SetParent+WS_CHILD so it hides/moves with the taskbar (fullscreen apps, auto-hide);
+`trayStripScript`: SetProcessDPIAware + dpi scale `$k` for all pixel sizes,
+Explorer-restart resilience via relaunch-unless-`wantExit`, float fallback
+hides while a fullscreen window is foreground, drag persists
+`{mode:'taskbar', right}` \| `{mode:'float', x, y}` to `~/.pulse/tray-strip.json`;
+style switches hand off via statusline `trayStyle` mismatch → relaunch; enable
+route accepts `?style=`), `updateCheck`.
 
 Test/dev env hooks: `PULSE_HOME`, `CLAUDE_DIR`/`CLAUDE_CONFIG_DIR`,
 `CODEX_DIR`/`CODEX_HOME`, `GEMINI_DIR`/`GEMINI_CLI_HOME`,
