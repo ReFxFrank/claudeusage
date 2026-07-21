@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.23.0';
+const PULSE_VERSION = '1.23.1';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -3707,7 +3707,10 @@ function statuslineData() {
 // trickles a refresh. The dashboard refreshes at the normal cadence
 // (METERS_OK_MS); background paths only poll the shared usage endpoint this
 // rarely, so Pulse isn't hammering it 24/7 when no one's watching the card.
+// With the TRAY enabled the strip/icon is a live gauge on the taskbar — a
+// permanently-visible consumer — so the trickle tightens to 5 minutes.
 const BACKGROUND_METERS_MS = 15 * 60 * 1000;
+const TRAY_METERS_MS = 5 * 60 * 1000;
 
 // Lazily refresh on summary builds; serve the cached state immediately.
 // background=true (status line, Discord) only triggers a refresh when the data
@@ -3758,7 +3761,9 @@ function projectedLeftAtReset(b) {
 function metersForPayload(background) {
   if (!metersEnabled()) return { enabled: false };
   const due = Date.now() >= (metersState.nextAttemptAt || 0);
-  const bgOk = !background || (Date.now() - (metersState.fetchedAt || 0) >= BACKGROUND_METERS_MS);
+  const trayOn = trayDesired !== null ? trayDesired : readConfig().tray === true;
+  const bgWindow = trayOn ? TRAY_METERS_MS : BACKGROUND_METERS_MS;
+  const bgOk = !background || (Date.now() - (metersState.fetchedAt || 0) >= bgWindow);
   if (due && bgOk) {
     refreshAccountMeters(); // async; next poll picks it up
   }
@@ -4057,17 +4062,17 @@ function trayScript(port) {
 function trayStyle() {
   return readConfig().trayStyle === 'strip' ? 'strip' : 'icon';
 }
-// The taskbar STRIP v2 — parented INTO the taskbar (openusage-windows style):
-// the pill is SetParent()ed into Shell_TrayWnd, so it is genuinely part of the
-// taskbar — it hides when a fullscreen game hides the taskbar, follows
-// auto-hide, and clips into the band, instead of floating over everything as
-// a screen-space overlay. DPI-aware (SetProcessDPIAware + a 96-dpi scale
-// factor for all pixel sizes) so 4K/150% monitors position correctly. If the
-// taskbar window can't be found/parented, falls back to a floating topmost
-// pill that HIDES while a fullscreen app is foreground. An Explorer restart
-// destroys the parented window — the script relaunches itself unless the exit
-// was deliberate (wantExit). Same mutex, version/style handoff, trayEnabled
-// self-exit, and statusline feed as the icon style.
+// The taskbar STRIP v5 — openusage-windows' StripForm recreated: TRANSPARENT
+// background (TransparencyKey on a near-black key color — text antialiases
+// toward the dark taskbar so edges stay clean) with per-provider cells drawn
+// straight onto the taskbar: a provider-colored dot + stacked "5h/wk % left"
+// lines per provider, flipping to today's spend every 9s (their usage↔price
+// roll, minus the animation). The strip grows LEFTWARD from a persisted
+// right-edge anchor, exactly like their _anchorRight. The v4 stability recipe
+// is preserved untouched: WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE (never takes
+// focus), Keep-OnTop = raw SetWindowPos(HWND_TOPMOST, NOACTIVATE) every 2s,
+// no fullscreen heuristics, relaunch-unless-wantExit, mutex + version/style
+// handoff via the statusline feed.
 function trayStripScript(port) {
   return [
     "$mtx = New-Object System.Threading.Mutex($false, 'PulseTray" + port + "')",
@@ -4076,83 +4081,51 @@ function trayStripScript(port) {
     "$myStyle = 'strip'",
     'Add-Type -AssemblyName System.Windows.Forms',
     'Add-Type -AssemblyName System.Drawing',
-    "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public struct PRECT{public int L,T,R,B;}public class PulseWin{[DllImport(\"user32.dll\",CharSet=CharSet.Unicode)]public static extern IntPtr FindWindowW(string c,string w);[DllImport(\"user32.dll\")]public static extern IntPtr SetParent(IntPtr c,IntPtr p);[DllImport(\"user32.dll\")]public static extern bool GetClientRect(IntPtr h,out PRECT r);[DllImport(\"user32.dll\")]public static extern bool GetWindowRect(IntPtr h,out PRECT r);[DllImport(\"user32.dll\")]public static extern bool IsWindow(IntPtr h);[DllImport(\"user32.dll\")]public static extern bool SetProcessDPIAware();[DllImport(\"user32.dll\")]public static extern IntPtr GetForegroundWindow();[DllImport(\"user32.dll\")]public static extern int GetWindowLong(IntPtr h,int i);[DllImport(\"user32.dll\")]public static extern int SetWindowLong(IntPtr h,int i,int v);}'",
+    "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public struct PRECT{public int L,T,R,B;}public class PulseWin{[DllImport(\"user32.dll\")]public static extern bool GetWindowRect(IntPtr h,out PRECT r);[DllImport(\"user32.dll\")]public static extern bool SetProcessDPIAware();[DllImport(\"user32.dll\")]public static extern int GetWindowLong(IntPtr h,int i);[DllImport(\"user32.dll\")]public static extern int SetWindowLong(IntPtr h,int i,int v);[DllImport(\"user32.dll\")]public static extern bool SetWindowPos(IntPtr h,IntPtr a,int x,int y,int cx,int cy,uint f);}'",
     '[void][PulseWin]::SetProcessDPIAware()',
     '$k = 1.0',
     'try { $g = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero); $k = $g.DpiX / 96.0; $g.Dispose() } catch {}',
     "$base = 'http://127.0.0.1:" + port + "'",
     "$posFile = Join-Path (Split-Path -Parent $PSCommandPath) 'tray-strip.json'",
-    '$savedRight = -1; $savedX = -1; $savedY = -1',
+    '$scr = [System.Windows.Forms.Screen]::PrimaryScreen',
+    '$H = [int](36 * $k)',
+    // The strip grows leftward from this x (kept near the tray) — openusage's
+    // _anchorRight. Legacy saves stored the LEFT x; convert on read.
+    '$script:anchorRight = $scr.Bounds.Right - [int](340 * $k)',
+    '$stripY = 0',
+    '$tbH = $scr.Bounds.Height - $scr.WorkingArea.Height',
+    'if ($tbH -ge [int](24 * $k) -and $tbH -le [int](96 * $k)) { $stripY = $scr.Bounds.Bottom - $tbH + [int](($tbH - $H) / 2) }',
+    'else { $stripY = $scr.WorkingArea.Bottom - $H - [int](8 * $k) }',
     'if (Test-Path $posFile) { try {',
     '  $saved = Get-Content -Raw $posFile -ErrorAction Stop | ConvertFrom-Json',
-    "  if ($saved.mode -eq 'taskbar' -and $saved.right -ge 0) { $savedRight = [int]$saved.right }",
-    "  if ($saved.mode -eq 'float' -and $saved.x -ge 0) { $savedX = [int]$saved.x; $savedY = [int]$saved.y }",
+    '  if ($saved.right -ge 80) { $script:anchorRight = [int]$saved.right }',
+    '  elseif ($saved.x -ge 0) { $script:anchorRight = [int]$saved.x + [int](190 * $k) }',
+    '  if ($saved.y -ge 0 -and $saved.y -lt $scr.Bounds.Height) { $stripY = [int]$saved.y }',
     '} catch {} }',
-    '$scr = [System.Windows.Forms.Screen]::PrimaryScreen',
-    '$W = [int](190 * $k)',
-    '$H = [int](30 * $k)',
+    '$script:anchorRight = [Math]::Max([int](120 * $k), [Math]::Min($script:anchorRight, $scr.Bounds.Right))',
     '$form = New-Object System.Windows.Forms.Form',
     "$form.FormBorderStyle = 'None'",
     '$form.ShowInTaskbar = $false',
     "$form.StartPosition = 'Manual'",
-    '$form.Size = New-Object System.Drawing.Size -ArgumentList $W, $H',
-    "$form.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#14131c')",
-    // Float-mode default position (used only when taskbar parenting fails):
-    // bottom-right, just above the working-area edge.
-    '$fx = $scr.WorkingArea.Right - $W - [int](260 * $k)',
-    '$fy = $scr.WorkingArea.Bottom - $H - [int](8 * $k)',
-    'if ($savedX -ge 0 -and $savedX -lt ($scr.Bounds.Width - 40) -and $savedY -ge 0 -and $savedY -lt $scr.Bounds.Height) { $fx = $savedX; $fy = $savedY }',
-    '$form.Location = New-Object System.Drawing.Point -ArgumentList $fx, $fy',
-    '$gp = New-Object System.Drawing.Drawing2D.GraphicsPath',
-    '$r = [int]($H / 2)',
-    '$gp.AddArc(0, 0, $r * 2, $r * 2, 90, 180)',
-    '$gp.AddArc($W - $r * 2, 0, $r * 2, $r * 2, 270, 180)',
-    '$gp.CloseFigure()',
-    '$form.Region = New-Object System.Drawing.Region -ArgumentList $gp',
-    '$dot = New-Object System.Windows.Forms.Label',
-    '$dot.Text = [char]0x25CF',
-    "$dot.Font = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 10, ([System.Drawing.FontStyle]::Bold)",
-    "$dot.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#9b8cff')",
-    '$dot.AutoSize = $false',
-    '$dot.Size = New-Object System.Drawing.Size -ArgumentList ([int](22 * $k)), $H',
-    '$dot.Location = New-Object System.Drawing.Point -ArgumentList ([int](8 * $k)), 0',
-    "$dot.TextAlign = 'MiddleCenter'",
-    '$lbl = New-Object System.Windows.Forms.Label',
-    "$lbl.Text = 'Pulse'",
-    "$lbl.Font = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 9",
-    "$lbl.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#e8e6f2')",
-    '$lbl.AutoSize = $false',
-    '$lbl.Size = New-Object System.Drawing.Size -ArgumentList ($W - [int](34 * $k)), $H',
-    '$lbl.Location = New-Object System.Drawing.Point -ArgumentList ([int](28 * $k)), 0',
-    "$lbl.TextAlign = 'MiddleLeft'",
-    '$form.Controls.Add($dot)',
-    '$form.Controls.Add($lbl)',
-    '$script:pages = @()',
-    '$script:pageIdx = 0',
+    '$form.Size = New-Object System.Drawing.Size -ArgumentList ([int](80 * $k)), $H',
+    // Transparent background: everything painted in the key color vanishes,
+    // leaving only the dots and text on the taskbar (openusage look). The key
+    // is near-black so antialiased text edges blend into the dark taskbar.
+    "$key = [System.Drawing.ColorTranslator]::FromHtml('#010203')",
+    '$form.BackColor = $key',
+    '$form.TransparencyKey = $key',
+    '$form.Location = New-Object System.Drawing.Point -ArgumentList ($script:anchorRight - $form.Width), $stripY',
+    "$fTop = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 7.5, ([System.Drawing.FontStyle]::Bold)",
+    "$fBot = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 7.5",
+    "$fBig = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 9.5, ([System.Drawing.FontStyle]::Bold)",
+    "$fDot = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 11, ([System.Drawing.FontStyle]::Bold)",
+    '$script:data = $null',
+    "$script:view = 'usage'",
     '$script:fails = 0',
-    '$script:dotHex = @()',
     '$script:wantExit = $false',
-    '$script:parented = $false',
-    '$script:trayWnd = [IntPtr]::Zero',
-    // Parent the pill INTO the taskbar so it lives and dies with it: hides
-    // with fullscreen apps, follows auto-hide, clips to the band.
-    'function Attach-ToTaskbar {',
-    "  $t = [PulseWin]::FindWindowW('Shell_TrayWnd', $null)",
-    '  if ($t -eq [IntPtr]::Zero) { return $false }',
-    '  $cr = New-Object PRECT',
-    '  [void][PulseWin]::GetClientRect($t, [ref]$cr)',
-    '  if ($cr.B -lt 20 -or $cr.R -lt 400) { return $false }',
-    '  $form.TopMost = $false',
-    '  $st = [PulseWin]::GetWindowLong($form.Handle, -16)',
-    '  [void][PulseWin]::SetWindowLong($form.Handle, -16, ($st -bor 0x40000000))',
-    '  if ([PulseWin]::SetParent($form.Handle, $t) -eq [IntPtr]::Zero) { return $false }',
-    '  $ro = if ($savedRight -ge 0) { $savedRight } else { [int](330 * $k) }',
-    '  $px = [Math]::Max(0, $cr.R - $W - $ro)',
-    '  $py = [Math]::Max(0, [int](($cr.B - $form.Height) / 2))',
-    '  $form.Location = New-Object System.Drawing.Point -ArgumentList $px, $py',
-    '  $script:trayWnd = $t',
-    '  $script:parented = $true',
-    '  return $true',
+    // ---- v4 stability recipe (do not touch) ----
+    'function Keep-OnTop {',
+    '  if ($form.IsHandleCreated) { [void][PulseWin]::SetWindowPos($form.Handle, [IntPtr]::new(-1), 0, 0, 0, 0, 0x13) }',
     '}',
     'function Open-PulseMini {',
     '  $wr = New-Object PRECT',
@@ -4162,39 +4135,7 @@ function trayStripScript(port) {
     "  try { Start-Process 'msedge' -ArgumentList ('--app=' + $base + '/#mini'), ('--window-size=' + [int](380 * $k) + ',' + [int](760 * $k)), ('--window-position=' + $px + ',' + $py) -ErrorAction Stop }",
     '  catch { Start-Process ($base + \'/#mini\') }',
     '}',
-    'function Show-PulsePage {',
-    '  if ($script:pages.Count -eq 0) { return }',
-    '  $script:pageIdx = $script:pageIdx % $script:pages.Count',
-    '  $lbl.Text = $script:pages[$script:pageIdx]',
-    '  $hex = $script:dotHex[$script:pageIdx]',
-    '  if ($hex) { $dot.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($hex) }',
-    '  $script:pageIdx = ($script:pageIdx + 1) % $script:pages.Count',
-    '}',
-    'function Update-PulseStrip {',
-    '  try {',
-    "    $s = Invoke-RestMethod -Uri ($base + '/api/statusline') -TimeoutSec 3",
-    '    if ($s.trayEnabled -eq $false) { $script:wantExit = $true; [System.Windows.Forms.Application]::Exit(); return }',
-    '    if (($s.version -and $s.version -ne $myVer) -or ($s.trayStyle -and $s.trayStyle -ne $myStyle)) {',
-    "      Start-Process 'powershell.exe' -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $PSCommandPath",
-    '      $script:wantExit = $true; [System.Windows.Forms.Application]::Exit(); return',
-    '    }',
-    '    $p = @(); $c = @()',
-    '    $m = $s.meters',
-    "    function LevelHex([int]$v) { if ($v -ge 85) { '#f27878' } elseif ($v -ge 60) { '#e0a132' } else { '#22b892' } }",
-    "    if ($m -and $m.claudeFiveHour -ne $null) { $p += ('Claude 5h  ' + (100 - [int]$m.claudeFiveHour) + '% left'); $c += (LevelHex $m.claudeFiveHour) }",
-    "    if ($m -and $m.claudeWeekly -ne $null) { $p += ('Claude wk  ' + (100 - [int]$m.claudeWeekly) + '% left'); $c += (LevelHex $m.claudeWeekly) }",
-    "    if ($m -and $m.codexWeekly -ne $null) { $p += ('Codex wk  ' + (100 - [int]$m.codexWeekly) + '% left'); $c += (LevelHex $m.codexWeekly) }",
-    "    if ($s.today) { $p += ('$' + [math]::Round([double]$s.today.cost, 2) + ' today'); $c += '#9b8cff' }",
-    "    if ($p.Count -eq 0) { $p = @('Pulse'); $c = @('#9b8cff') }",
-    '    $script:pages = $p; $script:dotHex = $c',
-    '    if ($script:pageIdx -ge $p.Count) { $script:pageIdx = 0 }',
-    '    $script:fails = 0',
-    '  } catch {',
-    '    $script:fails = $script:fails + 1',
-    "    $script:pages = @('server not responding'); $script:dotHex = @('#f27878'); $script:pageIdx = 0",
-    '    if ($script:fails -ge 6) { $script:wantExit = $true; [System.Windows.Forms.Application]::Exit() }',
-    '  }',
-    '}',
+    // ---- drag anywhere on the strip; small move = click ----
     '$script:dragStart = $null; $script:formStart = $null; $script:moved = $false',
     '$down = {',
     '  if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) {',
@@ -4209,38 +4150,109 @@ function trayStripScript(port) {
     '    $dx = $cur.X - $script:dragStart.X; $dy = $cur.Y - $script:dragStart.Y',
     '    if ([Math]::Abs($dx) -gt 4 -or [Math]::Abs($dy) -gt 4) { $script:moved = $true }',
     '    if ($script:moved) {',
-    '      $nx = $script:formStart.X + $dx; $ny = $script:formStart.Y + $dy',
-    '      if ($script:parented) {',
-    '        $cr = New-Object PRECT; [void][PulseWin]::GetClientRect($script:trayWnd, [ref]$cr)',
-    '        $nx = [Math]::Max(0, [Math]::Min($nx, $cr.R - $W))',
-    '        $ny = [Math]::Max(0, [Math]::Min($ny, $cr.B - $form.Height))',
-    '      }',
-    '      $form.Location = New-Object System.Drawing.Point -ArgumentList $nx, $ny',
+    '      $form.Location = New-Object System.Drawing.Point -ArgumentList ($script:formStart.X + $dx), ($script:formStart.Y + $dy)',
     '    }',
     '  }',
     '}',
     '$up = {',
     '  if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) {',
     '    if ($script:moved) {',
-    '      try {',
-    '        if ($script:parented) {',
-    '          $cr = New-Object PRECT; [void][PulseWin]::GetClientRect($script:trayWnd, [ref]$cr)',
-    "          @{ mode = 'taskbar'; right = [Math]::Max(0, $cr.R - $form.Location.X - $W) } | ConvertTo-Json | Set-Content -Path $posFile",
-    '        } else {',
-    "          @{ mode = 'float'; x = $form.Location.X; y = $form.Location.Y } | ConvertTo-Json | Set-Content -Path $posFile",
-    '        }',
-    '      } catch {}',
+    '      $script:anchorRight = $form.Location.X + $form.Width',
+    "      try { @{ mode = 'float'; right = $script:anchorRight; y = $form.Location.Y } | ConvertTo-Json | Set-Content -Path $posFile } catch {}",
     '    } else { Open-PulseMini }',
     '    $script:dragStart = $null',
     '  }',
     '}',
-    '$form.add_MouseDown($down); $form.add_MouseMove($move); $form.add_MouseUp($up)',
-    '$dot.add_MouseDown($down); $dot.add_MouseMove($move); $dot.add_MouseUp($up)',
-    '$lbl.add_MouseDown($down); $lbl.add_MouseMove($move); $lbl.add_MouseUp($up)',
+    'function Hook-Mouse($c) {',
+    '  $c.add_MouseDown($down); $c.add_MouseMove($move); $c.add_MouseUp($up)',
+    '}',
+    'Hook-Mouse $form',
+    // ---- cell builder: provider dot + stacked usage lines, or the spend view ----
+    'function New-StripLabel([string]$text, $font, [string]$hex, [int]$x, [int]$y, [int]$w, [int]$h, [string]$align) {',
+    '  $l = New-Object System.Windows.Forms.Label',
+    '  $l.Text = $text',
+    '  $l.Font = $font',
+    '  $l.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($hex)',
+    '  $l.BackColor = $form.BackColor',
+    '  $l.AutoSize = $false',
+    '  $l.Location = New-Object System.Drawing.Point -ArgumentList $x, $y',
+    '  $l.Size = New-Object System.Drawing.Size -ArgumentList $w, $h',
+    '  $l.TextAlign = $align',
+    '  Hook-Mouse $l',
+    '  [void]$form.Controls.Add($l)',
+    '  return $l',
+    '}',
+    'function Add-ProviderCell([int]$x, [string]$dotHex, [string]$line1, [string]$line2) {',
+    "  [void](New-StripLabel ([string][char]0x25CF) $fDot $dotHex $x 0 ([int](16 * $k)) $H 'MiddleCenter')",
+    '  $tx = $x + [int](16 * $k)',
+    '  $tw = [int](58 * $k)',
+    '  if ($line2) {',
+    "    [void](New-StripLabel $line1 $fTop '#f2f1f8' $tx 0 $tw ([int]($H / 2)) 'BottomLeft')",
+    "    [void](New-StripLabel $line2 $fBot '#b9b6cc' $tx ([int]($H / 2)) $tw ([int]($H / 2)) 'TopLeft')",
+    '  } else {',
+    "    [void](New-StripLabel $line1 $fTop '#f2f1f8' $tx 0 $tw $H 'MiddleLeft')",
+    '  }',
+    '  return ($x + [int](16 * $k) + $tw + [int](6 * $k))',
+    '}',
+    'function Build-Strip {',
+    '  foreach ($c in @($form.Controls)) { $form.Controls.Remove($c); $c.Dispose() }',
+    '  $d = $script:data',
+    '  $x = [int](4 * $k)',
+    '  if ($d -eq $null) {',
+    "    $x = Add-ProviderCell $x '#9b8cff' 'Pulse' $null",
+    "  } elseif ($script:view -eq 'price' -and $d.today -ne $null) {",
+    "    [void](New-StripLabel ([string][char]0x25CF) $fDot '#9b8cff' $x 0 ([int](16 * $k)) $H 'MiddleCenter')",
+    "    [void](New-StripLabel ('$' + $d.today + ' today') $fBig '#f2f1f8' ($x + [int](16 * $k)) 0 ([int](104 * $k)) $H 'MiddleLeft')",
+    '    $x = $x + [int](16 * $k) + [int](104 * $k) + [int](6 * $k)',
+    '  } else {',
+    '    $drew = $false',
+    '    if ($d.c5 -ne $null -or $d.cw -ne $null) {',
+    "      $l1 = if ($d.c5 -ne $null) { '5h ' + $d.c5 + '%' } else { 'wk ' + $d.cw + '%' }",
+    "      $l2 = if ($d.c5 -ne $null -and $d.cw -ne $null) { 'wk ' + $d.cw + '%' } else { $null }",
+    "      $x = Add-ProviderCell $x '#d97757' $l1 $l2",
+    '      $drew = $true',
+    '    }',
+    '    if ($d.xw -ne $null) {',
+    "      $x = Add-ProviderCell $x '#10a37f' ('wk ' + $d.xw + '%') $null",
+    '      $drew = $true',
+    '    }',
+    '    if (-not $drew -and $d.today -ne $null) {',
+    "      $x = Add-ProviderCell $x '#9b8cff' ('$' + $d.today) $null",
+    '      $drew = $true',
+    '    }',
+    "    if (-not $drew) { $x = Add-ProviderCell $x '#9b8cff' 'Pulse' $null }",
+    '  }',
+    '  $form.Width = $x',
+    '  $form.Left = $script:anchorRight - $form.Width',
+    '  Keep-OnTop',
+    '}',
+    // ---- data: same feed + handoff logic as always ----
+    'function Update-PulseStrip {',
+    '  try {',
+    "    $s = Invoke-RestMethod -Uri ($base + '/api/statusline') -TimeoutSec 3",
+    '    if ($s.trayEnabled -eq $false) { $script:wantExit = $true; [System.Windows.Forms.Application]::Exit(); return }',
+    '    if (($s.version -and $s.version -ne $myVer) -or ($s.trayStyle -and $s.trayStyle -ne $myStyle)) {',
+    "      Start-Process 'powershell.exe' -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $PSCommandPath",
+    '      $script:wantExit = $true; [System.Windows.Forms.Application]::Exit(); return',
+    '    }',
+    '    $d = @{ c5 = $null; cw = $null; xw = $null; today = $null }',
+    '    $m = $s.meters',
+    '    if ($m -and $m.claudeFiveHour -ne $null) { $d.c5 = 100 - [int]$m.claudeFiveHour }',
+    '    if ($m -and $m.claudeWeekly -ne $null) { $d.cw = 100 - [int]$m.claudeWeekly }',
+    '    if ($m -and $m.codexWeekly -ne $null) { $d.xw = 100 - [int]$m.codexWeekly }',
+    '    if ($s.today) { $d.today = [math]::Round([double]$s.today.cost, 2) }',
+    '    $script:data = $d',
+    '    $script:fails = 0',
+    '    Build-Strip',
+    '  } catch {',
+    '    $script:fails = $script:fails + 1',
+    '    if ($script:fails -ge 6) { $script:wantExit = $true; [System.Windows.Forms.Application]::Exit() }',
+    '  }',
+    '}',
     '$menu = New-Object System.Windows.Forms.ContextMenuStrip',
     "[void]$menu.Items.Add('Open dashboard', $null, { Start-Process ($base + '/') })",
     "[void]$menu.Items.Add('Open mini overview', $null, { Open-PulseMini })",
-    "[void]$menu.Items.Add('Refresh now', $null, { Update-PulseStrip; Show-PulsePage })",
+    "[void]$menu.Items.Add('Refresh now', $null, { Update-PulseStrip })",
     "[void]$menu.Items.Add('-')",
     "[void]$menu.Items.Add('Stop Pulse', $null, { try { Invoke-RestMethod -Method Post -Uri ($base + '/api/shutdown') -Headers @{ 'X-Pulse' = '1' } -TimeoutSec 3 | Out-Null } catch {}; $script:wantExit = $true; [System.Windows.Forms.Application]::Exit() })",
     "[void]$menu.Items.Add('Exit strip', $null, { $script:wantExit = $true; [System.Windows.Forms.Application]::Exit() })",
@@ -4248,42 +4260,34 @@ function trayStripScript(port) {
     '$dataTimer = New-Object System.Windows.Forms.Timer',
     '$dataTimer.Interval = 30000',
     '$dataTimer.add_Tick({ Update-PulseStrip })',
-    '$pageTimer = New-Object System.Windows.Forms.Timer',
-    '$pageTimer.Interval = 4000',
-    '$pageTimer.add_Tick({ Show-PulsePage })',
-    // Watchdog: parented — exit (and be relaunched) if Explorer/taskbar went
-    // away; float fallback — hide over fullscreen apps, stay topmost otherwise.
-    '$visTimer = New-Object System.Windows.Forms.Timer',
-    '$visTimer.Interval = 1500',
-    '$visTimer.add_Tick({',
-    '  if ($script:parented) {',
-    '    if (-not [PulseWin]::IsWindow($script:trayWnd)) { [System.Windows.Forms.Application]::Exit() }',
-    '    return',
-    '  }',
-    '  $fg = [PulseWin]::GetForegroundWindow()',
-    '  if ($fg -eq $form.Handle) { return }',
-    '  $fr = New-Object PRECT',
-    '  [void][PulseWin]::GetWindowRect($fg, [ref]$fr)',
-    '  $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds',
-    '  $isFull = ($fr.L -le $b.Left) -and ($fr.T -le $b.Top) -and ($fr.R -ge $b.Right) -and ($fr.B -ge $b.Bottom)',
-    '  if ($isFull) { if ($form.Visible) { $form.Hide() } }',
-    '  else { if (-not $form.Visible) { $form.Show() }; $form.TopMost = $true }',
+    // usage ↔ spend flip on openusage's relaxed 9s cadence
+    '$flipTimer = New-Object System.Windows.Forms.Timer',
+    '$flipTimer.Interval = 9000',
+    '$flipTimer.add_Tick({',
+    "  $script:view = if ($script:view -eq 'usage') { 'price' } else { 'usage' }",
+    '  Build-Strip',
     '})',
+    '$visTimer = New-Object System.Windows.Forms.Timer',
+    '$visTimer.Interval = 2000',
+    '$visTimer.add_Tick({ Keep-OnTop })',
     'Update-PulseStrip',
-    'Show-PulsePage',
+    'Build-Strip',
     '$dataTimer.Start()',
-    '$pageTimer.Start()',
+    '$flipTimer.Start()',
     '$form.Show()',
-    'if (-not (Attach-ToTaskbar)) { $form.TopMost = $true }',
+    // WS_EX_TOOLWINDOW (0x80) | WS_EX_NOACTIVATE (0x8000000) | WS_EX_TOPMOST
+    // (0x8): no alt-tab entry, and the window can never take focus.
+    '$ex = [PulseWin]::GetWindowLong($form.Handle, -20)',
+    '[void][PulseWin]::SetWindowLong($form.Handle, -20, ($ex -bor 0x80 -bor 0x8000000 -bor 0x8))',
+    'Keep-OnTop',
     '$visTimer.Start()',
     '[System.Windows.Forms.Application]::Run($form)',
-    // Explorer restart destroys a taskbar-parented window and ends the message
-    // loop — relaunch unless the exit was deliberate.
     'if (-not $script:wantExit) {',
     "  Start-Process 'powershell.exe' -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $PSCommandPath",
     '}',
   ].join('\r\n') + '\r\n';
 }
+
 
 
 function startTray(port) {

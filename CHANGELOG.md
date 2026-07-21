@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.23.1
+
+- **Strip: stable at last — ported the technique from openusage-windows.**
+  Two failed approaches taught us what that project already knew: parenting
+  into the taskbar window doesn't work on Windows 11 (the XAML taskbar paints
+  over legacy child windows — v1.23.0, reverted), and a normal topmost form
+  keeps vanishing because WinForms' `TopMost` reassert **activates** the
+  window, causing constant focus churn (v1.22, the "disappears occasionally"
+  bug). The strip now uses openusage-windows' exact recipe: a floating pill
+  in the taskbar band with **`WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`** (it can
+  never take focus — clicks work without stealing focus from your game, and
+  it stays out of activation z-order battles), plus a 2-second
+  **`SetWindowPos(HWND_TOPMOST, NOACTIVATE)`** keep-on-top that reasserts
+  z-order without activating anything. The fullscreen-hide heuristic is gone
+  — exclusive-fullscreen apps cover the overlay naturally, same as
+  openusage. Credit: CheesyPoofs346/openusage-windows for the working
+  StripForm design.
+- **Strip: the transparent openusage look.** No more dark pill box — the
+  background is fully transparent (color-keyed against the dark taskbar), so
+  what you see is just the content drawn onto the taskbar: an
+  Anthropic-orange dot with stacked **5h / wk "% left"** lines for Claude, an
+  OpenAI-green dot with the Codex weekly, flipping to **today's spend** every
+  9 seconds (their usage↔price roll). The strip sizes itself to its content
+  and grows leftward from a persisted right-edge anchor, exactly like their
+  `_anchorRight`.
+- **Fresher meters when the tray is on:** the strip/icon is a
+  permanently-visible gauge, so with the tray enabled the background
+  account-meters trickle tightens from 15 minutes to 5 (the dashboard-driven
+  cadence and 429 backoff behavior are unchanged). Without usage data — e.g.
+  during a rate-limit backoff — the strip shows today's spend and picks the
+  percentages up automatically once the meters recover.
+
 ## v1.23.0
 
 - **The strip is now part of the taskbar, not an overlay.** v1.22's strip was

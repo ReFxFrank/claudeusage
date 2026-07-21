@@ -86,12 +86,17 @@ opt-in, `=== true` only) + `anomalyMultiplier` (trigger ratio; default 3, floor
 1.5), `budget` (USD spend target; unset =
 off) + `budgetPeriod` (`month`|`week`, default month; set via `/api/budget/set`),
 `tray` (Windows notification-area icon; also `--tray`) + `trayStyle`
-(`icon` default \| `strip` — a pill PARENTED INTO `Shell_TrayWnd` via
-SetParent+WS_CHILD so it hides/moves with the taskbar (fullscreen apps, auto-hide);
-`trayStripScript`: SetProcessDPIAware + dpi scale `$k` for all pixel sizes,
-Explorer-restart resilience via relaunch-unless-`wantExit`, float fallback
-hides while a fullscreen window is foreground, drag persists
-`{mode:'taskbar', right}` \| `{mode:'float', x, y}` to `~/.pulse/tray-strip.json`;
+(`icon` default \| `strip` — a floating pill in the taskbar band using the
+openusage-windows StripForm recipe (the two traps, learned the hard way: NO
+SetParent into `Shell_TrayWnd` — Win11's XAML taskbar paints over legacy
+child HWNDs; NO WinForms `TopMost=$true` reasserts — they ACTIVATE the form
+and the focus churn makes the pill vanish); `trayStripScript`: post-Show
+`SetWindowLong(GWL_EXSTYLE)` adds `WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|
+WS_EX_TOPMOST` so it can never take focus, `Keep-OnTop` = raw
+`SetWindowPos(HWND_TOPMOST, 0x13)` every 2s, NO fullscreen-hide heuristics
+(exclusive fullscreen covers it naturally), SetProcessDPIAware + dpi scale
+`$k` for all pixel sizes, relaunch-unless-`wantExit` resilience, drag
+persists `{mode:'float', x, y}` to `~/.pulse/tray-strip.json`;
 style switches hand off via statusline `trayStyle` mismatch → relaunch; enable
 route accepts `?style=`), `updateCheck`.
 
