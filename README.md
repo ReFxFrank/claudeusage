@@ -62,6 +62,10 @@ logs already on your machine.
   recent-sessions table as Excel-friendly CSV, or the full payload as JSON.
   Respects the active source filter and period; served by your own loopback
   server, so nothing leaves the machine.
+- ◧ **Mini side overview** — a compact panel (`/#mini`, or the **◧ mini**
+  header button) with your Claude + Codex windows as **% left** bars, true
+  reset countdowns, spend at a glance, and a 30-day trend — sized for a
+  narrow docked window or a browser "install as app" side panel.
 - 📈 **Period-over-period comparison** — the spend header shows the delta vs the
   previous equal window (e.g. *▲ 18% vs prev 30 days*), so trends are obvious.
 - 🕒 **"When you work" heatmap** — a 7×24 day-by-hour grid shaded by spend, so

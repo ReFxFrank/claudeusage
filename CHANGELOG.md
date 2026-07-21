@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.19.0
+
+- **Mini side overview:** a compact, always-glanceable panel at
+  `localhost:4747/#mini` — stacked provider cards showing your official
+  **Claude** and **Codex** windows as **"% left"** bars with true reset
+  countdowns, plus today / last-30-days spend and a 30-day trend strip.
+  Designed for a narrow docked browser window: click the new **◧ mini**
+  button in the dashboard header to pop it open at side-panel size, or use
+  your browser's "install as app" for a chromeless panel that lives on the
+  edge of your screen. Same data, same 10-second refresh, no new endpoints,
+  lite-graphics safe. (Claude meters appear when account meters are enabled;
+  Codex windows come free from the local rollout snapshots.)
+
 ## v1.18.0
 
 - **Roo Code as a source (zero setup):** Pulse now ingests **Roo Code** — the

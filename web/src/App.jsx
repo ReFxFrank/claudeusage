@@ -11,6 +11,7 @@ import {
 } from './panels.jsx';
 import { ServerPanel, StopButton } from './server-panel.jsx';
 import { MetersCard } from './meters.jsx';
+import { MiniOverview } from './mini.jsx';
 
 export default function App() {
   // Graphics mode — 'auto' detects software rendering (no hardware accel) and
@@ -31,6 +32,15 @@ export default function App() {
   const { data, error, loading } = useSummary(10000, srcFilter);
   const [periodKey, setPeriodKey] = useState('last30');
   const [stopped, setStopped] = useState(false);
+
+  // #mini — the compact side overview (narrow docked window / installed app).
+  const [route, setRoute] = useState(() => window.location.hash);
+  useEffect(() => {
+    const onHash = () => setRoute(window.location.hash);
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+  const miniView = route === '#mini';
 
   function updateFilter(next) {
     setSrcFilter(next);
@@ -76,6 +86,8 @@ export default function App() {
     );
   }
 
+  if (miniView) return <MiniOverview data={data} />;
+
   const latest = data.latestTs;
   const stale = latest && data.generatedAt - latest > 3 * 3600 * 1000;
   const allSrc = data.allSources || [];
@@ -87,6 +99,13 @@ export default function App() {
       header={
         <div className="hmeta">
           <div className="hactions">
+            <button
+              className="minibtn"
+              title="Open the compact side overview in a small window (limits, resets, spend at a glance)"
+              onClick={() => window.open(window.location.pathname + '#mini', 'pulse-mini', 'width=340,height=760,popup=yes')}
+            >
+              ◧ mini
+            </button>
             {data.reach && (data.reach.downloads != null || data.reach.stars != null) && (
               <a
                 className="reachpill"
