@@ -68,14 +68,16 @@ logs already on your machine.
   Today / Yesterday / 30-Days spend donut with per-source breakdown, and a
   usage trend — sized for a narrow docked window or a browser "install as
   app" side panel.
-- 🔔 **Windows tray icon** (opt-in — flip **Tray icon: on** in the Server
-  panel, or `--tray` / `{"tray": true}`) — Pulse in the notification area
-  with your Claude 5-hour **usage % painted on the icon** (green → amber →
-  red), a live tooltip (today's spend + 5h/weekly %), left-click opening the
-  mini overview as a chromeless app window, and a right-click menu with
-  dashboard / stop. Zero dependencies — a hand-rolled PowerShell NotifyIcon
-  fed by the local statusline endpoint. Tip: Windows hides new tray icons
-  behind the `^` chevron — drag Pulse onto the taskbar once to pin it.
+- 🔔 **Windows tray — icon or taskbar strip** (opt-in; the Server-panel
+  button cycles **off → icon → strip**, or `--tray` / `{"tray": true,
+  "trayStyle": "strip"}`). **Icon**: a notification-area icon with your
+  Claude 5-hour **usage % painted on it** (green → amber → red) and a live
+  tooltip. **Strip**: a slim always-on-top pill drawn over the taskbar
+  itself, rotating through *Claude 5h/wk % left*, *Codex wk % left*, and
+  today's spend — drag it anywhere (remembered), click it to pop the mini
+  overview open above it. Zero dependencies — hand-rolled PowerShell fed by
+  the local statusline endpoint. Tip for the icon style: Windows hides new
+  tray icons behind the `^` chevron — drag Pulse out once to pin it.
 - 📈 **Period-over-period comparison** — the spend header shows the delta vs the
   previous equal window (e.g. *▲ 18% vs prev 30 days*), so trends are obvious.
 - 🕒 **"When you work" heatmap** — a 7×24 day-by-hour grid shaded by spend, so

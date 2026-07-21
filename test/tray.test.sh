@@ -31,6 +31,8 @@ GETCODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/api/tra
 curl -s -X POST -H 'X-Pulse: 1' "http://127.0.0.1:$PORT/api/tray/enable" > "$TMP/en.json"
 curl -s "http://127.0.0.1:$PORT/api/summary" > "$TMP/on.json"
 curl -s "http://127.0.0.1:$PORT/api/statusline" > "$TMP/sl-on.json"
+curl -s -X POST -H 'X-Pulse: 1' "http://127.0.0.1:$PORT/api/tray/enable?style=strip" > "$TMP/strip.json"
+curl -s "http://127.0.0.1:$PORT/api/statusline" > "$TMP/sl-strip.json"
 curl -s -X POST -H 'X-Pulse: 1' "http://127.0.0.1:$PORT/api/tray/disable" > "$TMP/dis.json"
 sleep 3.2
 curl -s "http://127.0.0.1:$PORT/api/statusline" > "$TMP/sl-off.json"
@@ -51,6 +53,8 @@ const cfg = JSON.parse(fs.readFileSync(process.argv[3] + "/config.json", "utf8")
 ok(cfg.tray === false, "config ends disabled after the disable call (persisted writes)");
 ok(J("on.json").tray.enabled === true, "summary reflects enabled");
 ok(J("sl-on.json").trayEnabled === true, "statusline carries trayEnabled:true while on");
+ok(J("strip.json").tray.style === "strip", "enable?style=strip switches the style");
+ok(J("sl-strip.json").trayStyle === "strip", "statusline carries trayStyle for the icon<->strip handoff");
 ok(J("dis.json").tray.enabled === false, "POST disable -> disabled");
 ok(J("sl-off.json").trayEnabled === false, "statusline flips to trayEnabled:false (tray self-exit signal)");
 process.exit(fail);

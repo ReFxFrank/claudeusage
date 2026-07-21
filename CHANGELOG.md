@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.22.0
+
+- **Taskbar strip — the openusage-windows look.** A new tray style: instead of
+  a notification-area icon, Pulse draws a slim, always-on-top **pill right on
+  your taskbar** that rotates through your numbers every few seconds —
+  *Claude 5h 85% left* → *Claude wk 17% left* → *Codex wk 37% left* →
+  *$99.61 today* — with a status dot colored by how hot each window is
+  (green → amber → red). **Drag it** anywhere along the taskbar (position
+  remembered); **click it** to pop the mini overview open as an app window
+  anchored above it; right-click for dashboard / refresh / stop. Switch
+  styles from the Server panel — the tray button now cycles
+  **off → icon → strip** — or set `{"trayStyle": "strip"}`. A running tray
+  hands off to the new style within ~30 seconds (same relaunch mechanism as
+  version updates), and settings changes now reach the tray immediately (the
+  statusline feed no longer serves a stale memo after a config write).
+
 ## v1.21.0
 
 - **Tray icon, now actually visible and useful.** Three fixes from real-world

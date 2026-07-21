@@ -73,14 +73,23 @@ export function ServerPanel({ data, onStopped, gfx, delay = 0.36 }) {
     setBusy(null);
   }
 
+  // Cycles off → icon → strip → off. icon = notification-area NotifyIcon with
+  // a % badge; strip = an always-on-top readout over the taskbar itself
+  // (openusage-style) — draggable, click opens the mini panel.
   async function onToggleTray() {
     setBusy('tray');
     try {
-      const on = !(data.tray && data.tray.enabled);
-      await postJson('/api/tray/' + (on ? 'enable' : 'disable'));
-      setNote(on
-        ? 'Tray icon starting — Windows hides new tray icons behind the ^ chevron; drag Pulse onto the taskbar once to pin it.'
-        : 'Tray icon disabled — it exits within ~30 seconds.');
+      const t = data.tray || {};
+      const next = !t.enabled ? 'icon' : t.style !== 'strip' ? 'strip' : 'off';
+      if (next === 'off') {
+        await postJson('/api/tray/disable');
+        setNote('Tray disabled — it exits within ~30 seconds.');
+      } else {
+        await postJson('/api/tray/enable?style=' + next);
+        setNote(next === 'icon'
+          ? 'Tray icon starting — Windows hides new tray icons behind the ^ chevron; drag Pulse onto the taskbar once to pin it.'
+          : 'Taskbar strip starting (running trays switch within ~30s) — drag it anywhere; click it for the mini panel.');
+      }
     } catch (e) { setNote('Could not toggle the tray: ' + e.message); }
     setBusy(null);
   }
@@ -206,9 +215,9 @@ export function ServerPanel({ data, onStopped, gfx, delay = 0.36 }) {
             className="btn ghost"
             onClick={onToggleTray}
             disabled={busy === 'tray'}
-            title="Windows notification-area icon: live 5h-usage badge + today tooltip; left-click opens the mini overview as an app window. Windows hides new tray icons behind the ^ chevron until you drag them onto the taskbar."
+            title="Cycles off → icon → strip. Icon: notification-area icon with a live 5h-% badge. Strip: an always-on-top readout over the taskbar (drag to move, click for the mini panel) — the openusage look."
           >
-            {busy === 'tray' ? 'Saving…' : (data.tray.enabled ? 'Tray icon: on' : 'Tray icon: off')}
+            {busy === 'tray' ? 'Saving…' : ('Tray: ' + (!data.tray.enabled ? 'off' : data.tray.style === 'strip' ? 'strip' : 'icon'))}
           </button>
         )}
         {gfx && (

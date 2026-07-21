@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.21.0';
+const PULSE_VERSION = '1.22.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -123,9 +123,11 @@ function writeConfig(patch) {
   } catch (e) {
     console.warn('[pulse] could not write config: ' + e.message);
   }
-  // Config affects the summary payload (budget, meters, alerts, …) — a memoized
-  // payload must never outlive a settings change.
+  // Config affects the summary payload (budget, meters, alerts, …) and the
+  // statusline feed (trayEnabled/trayStyle drive the tray's handoff) — a
+  // memoized copy must never outlive a settings change.
   summaryMemo = { at: 0, payload: null };
+  statuslineMemo = { at: 0, data: null };
   return next;
 }
 
@@ -2328,7 +2330,7 @@ function buildSummary(sourceFilter, opts) {
   payload.discord = discordForPayload();
   // Windows tray state — the Server panel shows the toggle only where the
   // feature exists.
-  payload.tray = { supported: process.platform === 'win32', enabled: trayDesired !== null ? trayDesired : readConfig().tray === true };
+  payload.tray = { supported: process.platform === 'win32', enabled: trayDesired !== null ? trayDesired : readConfig().tray === true, style: trayStyle() };
   // Server-panel visibility into the process footprint (RSS + JS heap).
   try {
     const mu = process.memoryUsage();
@@ -3691,10 +3693,12 @@ function statuslineData() {
     meters: statuslineMeterPcts(s),
     // The tray polls this feed; when the toggle turns the tray off it sees
     // trayEnabled:false here and exits itself. trayDesired covers a
-    // flag-started tray with no config key.
+    // flag-started tray with no config key. trayStyle drives the icon↔strip
+    // handoff (a mismatch relaunches the tray from the rewritten script).
     trayEnabled: trayDesired !== null ? trayDesired : readConfig().tray === true,
+    trayStyle: trayStyle(),
     version: PULSE_VERSION,
-  } : { today: null, trayEnabled: trayDesired !== null ? trayDesired : readConfig().tray === true, version: PULSE_VERSION };
+  } : { today: null, trayEnabled: trayDesired !== null ? trayDesired : readConfig().tray === true, trayStyle: trayStyle(), version: PULSE_VERSION };
   statuslineMemo = { at: now, data: d };
   return d;
 }
@@ -3950,6 +3954,7 @@ function trayScript(port) {
     // the old one has released the mutex.
     'if (-not $mtx.WaitOne(10000)) { exit }',
     "$myVer = '" + PULSE_VERSION + "'",
+    "$myStyle = 'icon'",
     'Add-Type -AssemblyName System.Windows.Forms',
     'Add-Type -AssemblyName System.Drawing',
     // GetHicon handles must be destroyed or every badge repaint leaks a GDI
@@ -4011,9 +4016,9 @@ function trayScript(port) {
     "    $s = Invoke-RestMethod -Uri ($base + '/api/statusline') -TimeoutSec 3",
     // The dashboard toggle turns the tray off by flipping this field.
     '    if ($s.trayEnabled -eq $false) { $ni.Visible = $false; [System.Windows.Forms.Application]::Exit(); return }',
-    // Server updated under us: the server rewrote tray.ps1 at startup, so
-    // relaunch from the fresh file and hand over the mutex.
-    '    if ($s.version -and $s.version -ne $myVer) {',
+    // Server updated OR the tray style changed under us: the server rewrote
+    // tray.ps1, so relaunch from the fresh file and hand over the mutex.
+    '    if (($s.version -and $s.version -ne $myVer) -or ($s.trayStyle -and $s.trayStyle -ne $myStyle)) {',
     "      Start-Process 'powershell.exe' -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $PSCommandPath",
     '      $ni.Visible = $false; [System.Windows.Forms.Application]::Exit(); return',
     '    }',
@@ -4046,6 +4051,169 @@ function trayScript(port) {
     '$ni.Visible = $false',
   ].join('\r\n') + '\r\n';
 }
+// 'icon' = a notification-area NotifyIcon with a % badge; 'strip' = an
+// always-on-top mini readout drawn over the taskbar itself (glyph + rotating
+// pages, draggable, click opens the mini panel) — the openusage-windows look.
+function trayStyle() {
+  return readConfig().trayStyle === 'strip' ? 'strip' : 'icon';
+}
+// The taskbar STRIP (openusage-windows style): a slim borderless always-on-top
+// form positioned over the taskbar's right end — a colored status dot + text
+// rotating through pages (Claude 5h %, weekly %, Codex weekly %, today's $).
+// Drag to reposition (persisted to ~/.pulse/tray-strip.json; a <5px move
+// counts as a click); left-click opens the mini overview as an app window
+// anchored above the strip; right-click menu mirrors the icon tray. Same
+// mutex, version-handoff, trayEnabled self-exit, and statusline feed as the
+// icon style.
+function trayStripScript(port) {
+  return [
+    "$mtx = New-Object System.Threading.Mutex($false, 'PulseTray" + port + "')",
+    'if (-not $mtx.WaitOne(10000)) { exit }',
+    "$myVer = '" + PULSE_VERSION + "'",
+    "$myStyle = 'strip'",
+    'Add-Type -AssemblyName System.Windows.Forms',
+    'Add-Type -AssemblyName System.Drawing',
+    "$base = 'http://127.0.0.1:" + port + "'",
+    "$posFile = Join-Path (Split-Path -Parent $PSCommandPath) 'tray-strip.json'",
+    '$scr = [System.Windows.Forms.Screen]::PrimaryScreen',
+    '$tbH = $scr.Bounds.Height - $scr.WorkingArea.Height',
+    'if ($tbH -lt 24 -or $tbH -gt 96) { $tbH = 48 } # side/top/hidden taskbar -> float above the corner',
+    '$H = [Math]::Min(34, $tbH - 6); if ($H -lt 24) { $H = 24 }',
+    '$W = 190',
+    '$form = New-Object System.Windows.Forms.Form',
+    "$form.FormBorderStyle = 'None'",
+    '$form.TopMost = $true',
+    '$form.ShowInTaskbar = $false',
+    "$form.StartPosition = 'Manual'",
+    '$form.Size = New-Object System.Drawing.Size -ArgumentList $W, $H',
+    "$form.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#14131c')",
+    '$x = $scr.WorkingArea.Right - $W - 260',
+    '$y = $scr.Bounds.Bottom - $tbH + [int](($tbH - $H) / 2)',
+    'if ($scr.Bounds.Height -eq $scr.WorkingArea.Height) { $y = $scr.WorkingArea.Bottom - $H - 8 }',
+    'try {',
+    '  $saved = Get-Content -Raw $posFile | ConvertFrom-Json',
+    '  if ($saved.x -ge 0 -and $saved.x -lt ($scr.Bounds.Width - 40) -and $saved.y -ge 0 -and $saved.y -lt $scr.Bounds.Height) { $x = $saved.x; $y = $saved.y }',
+    '} catch {}',
+    '$form.Location = New-Object System.Drawing.Point -ArgumentList $x, $y',
+    // Rounded pill silhouette so it reads as a widget, not a gray box.
+    '$gp = New-Object System.Drawing.Drawing2D.GraphicsPath',
+    '$r = [int]($H / 2)',
+    '$gp.AddArc(0, 0, $r * 2, $r * 2, 90, 180)',
+    '$gp.AddArc($W - $r * 2, 0, $r * 2, $r * 2, 270, 180)',
+    '$gp.CloseFigure()',
+    '$form.Region = New-Object System.Drawing.Region -ArgumentList $gp',
+    '$dot = New-Object System.Windows.Forms.Label',
+    "$dot.Text = [char]0x25CF",
+    "$dot.Font = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 10, ([System.Drawing.FontStyle]::Bold)",
+    "$dot.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#9b8cff')",
+    '$dot.AutoSize = $false',
+    '$dot.Size = New-Object System.Drawing.Size -ArgumentList 22, $H',
+    '$dot.Location = New-Object System.Drawing.Point -ArgumentList 8, 0',
+    "$dot.TextAlign = 'MiddleCenter'",
+    '$lbl = New-Object System.Windows.Forms.Label',
+    "$lbl.Text = 'Pulse'",
+    "$lbl.Font = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 9",
+    "$lbl.ForeColor = [System.Drawing.ColorTranslator]::FromHtml('#e8e6f2')",
+    '$lbl.AutoSize = $false',
+    '$lbl.Size = New-Object System.Drawing.Size -ArgumentList ($W - 34), $H',
+    '$lbl.Location = New-Object System.Drawing.Point -ArgumentList 28, 0',
+    "$lbl.TextAlign = 'MiddleLeft'",
+    '$form.Controls.Add($dot)',
+    '$form.Controls.Add($lbl)',
+    '$script:pages = @()',
+    '$script:pageIdx = 0',
+    '$script:fails = 0',
+    '$script:dotHex = @()',
+    'function Open-PulseMini {',
+    '  $px = [Math]::Max(0, $form.Location.X - 100)',
+    '  $py = [Math]::Max(0, $scr.WorkingArea.Bottom - 780)',
+    "  try { Start-Process 'msedge' -ArgumentList ('--app=' + $base + '/#mini'), '--window-size=380,760', ('--window-position=' + $px + ',' + $py) -ErrorAction Stop }",
+    '  catch { Start-Process ($base + \'/#mini\') }',
+    '}',
+    'function Show-PulsePage {',
+    '  if ($script:pages.Count -eq 0) { return }',
+    '  $script:pageIdx = $script:pageIdx % $script:pages.Count',
+    '  $lbl.Text = $script:pages[$script:pageIdx]',
+    '  $hex = $script:dotHex[$script:pageIdx]',
+    '  if ($hex) { $dot.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($hex) }',
+    '  $script:pageIdx = ($script:pageIdx + 1) % $script:pages.Count',
+    '}',
+    'function Update-PulseStrip {',
+    '  try {',
+    "    $s = Invoke-RestMethod -Uri ($base + '/api/statusline') -TimeoutSec 3",
+    '    if ($s.trayEnabled -eq $false) { [System.Windows.Forms.Application]::Exit(); return }',
+    '    if (($s.version -and $s.version -ne $myVer) -or ($s.trayStyle -and $s.trayStyle -ne $myStyle)) {',
+    "      Start-Process 'powershell.exe' -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $PSCommandPath",
+    '      [System.Windows.Forms.Application]::Exit(); return',
+    '    }',
+    '    $p = @(); $c = @()',
+    '    $m = $s.meters',
+    "    function LevelHex([int]$v) { if ($v -ge 85) { '#f27878' } elseif ($v -ge 60) { '#e0a132' } else { '#22b892' } }",
+    "    if ($m -and $m.claudeFiveHour -ne $null) { $p += ('Claude 5h  ' + (100 - [int]$m.claudeFiveHour) + '% left'); $c += (LevelHex $m.claudeFiveHour) }",
+    "    if ($m -and $m.claudeWeekly -ne $null) { $p += ('Claude wk  ' + (100 - [int]$m.claudeWeekly) + '% left'); $c += (LevelHex $m.claudeWeekly) }",
+    "    if ($m -and $m.codexWeekly -ne $null) { $p += ('Codex wk  ' + (100 - [int]$m.codexWeekly) + '% left'); $c += (LevelHex $m.codexWeekly) }",
+    "    if ($s.today) { $p += ('$' + [math]::Round([double]$s.today.cost, 2) + ' today'); $c += '#9b8cff' }",
+    "    if ($p.Count -eq 0) { $p = @('Pulse'); $c = @('#9b8cff') }",
+    '    $script:pages = $p; $script:dotHex = $c',
+    '    if ($script:pageIdx -ge $p.Count) { $script:pageIdx = 0 }',
+    '    $script:fails = 0',
+    '  } catch {',
+    '    $script:fails = $script:fails + 1',
+    "    $script:pages = @('server not responding'); $script:dotHex = @('#f27878'); $script:pageIdx = 0",
+    '    if ($script:fails -ge 6) { [System.Windows.Forms.Application]::Exit() }',
+    '  }',
+    '}',
+    // Drag anywhere on the strip; a tiny move is a click -> open the panel.
+    '$script:dragStart = $null; $script:formStart = $null; $script:moved = $false',
+    '$down = {',
+    '  if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) {',
+    '    $script:dragStart = [System.Windows.Forms.Cursor]::Position',
+    '    $script:formStart = $form.Location',
+    '    $script:moved = $false',
+    '  }',
+    '}',
+    '$move = {',
+    '  if ($script:dragStart -ne $null -and $_.Button -eq [System.Windows.Forms.MouseButtons]::Left) {',
+    '    $cur = [System.Windows.Forms.Cursor]::Position',
+    '    $dx = $cur.X - $script:dragStart.X; $dy = $cur.Y - $script:dragStart.Y',
+    '    if ([Math]::Abs($dx) -gt 4 -or [Math]::Abs($dy) -gt 4) { $script:moved = $true }',
+    '    if ($script:moved) { $form.Location = New-Object System.Drawing.Point -ArgumentList ($script:formStart.X + $dx), ($script:formStart.Y + $dy) }',
+    '  }',
+    '}',
+    '$up = {',
+    '  if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) {',
+    '    if ($script:moved) {',
+    '      try { @{ x = $form.Location.X; y = $form.Location.Y } | ConvertTo-Json | Set-Content -Path $posFile } catch {}',
+    '    } else { Open-PulseMini }',
+    '    $script:dragStart = $null',
+    '  }',
+    '}',
+    '$form.add_MouseDown($down); $form.add_MouseMove($move); $form.add_MouseUp($up)',
+    '$dot.add_MouseDown($down); $dot.add_MouseMove($move); $dot.add_MouseUp($up)',
+    '$lbl.add_MouseDown($down); $lbl.add_MouseMove($move); $lbl.add_MouseUp($up)',
+    '$menu = New-Object System.Windows.Forms.ContextMenuStrip',
+    "[void]$menu.Items.Add('Open dashboard', $null, { Start-Process ($base + '/') })",
+    "[void]$menu.Items.Add('Open mini overview', $null, { Open-PulseMini })",
+    "[void]$menu.Items.Add('Refresh now', $null, { Update-PulseStrip; Show-PulsePage })",
+    "[void]$menu.Items.Add('-')",
+    "[void]$menu.Items.Add('Stop Pulse', $null, { try { Invoke-RestMethod -Method Post -Uri ($base + '/api/shutdown') -Headers @{ 'X-Pulse' = '1' } -TimeoutSec 3 | Out-Null } catch {}; [System.Windows.Forms.Application]::Exit() })",
+    "[void]$menu.Items.Add('Exit strip', $null, { [System.Windows.Forms.Application]::Exit() })",
+    '$form.ContextMenuStrip = $menu',
+    '$dataTimer = New-Object System.Windows.Forms.Timer',
+    '$dataTimer.Interval = 30000',
+    '$dataTimer.add_Tick({ Update-PulseStrip })',
+    '$pageTimer = New-Object System.Windows.Forms.Timer',
+    '$pageTimer.Interval = 4000',
+    '$pageTimer.add_Tick({ Show-PulsePage })',
+    'Update-PulseStrip',
+    'Show-PulsePage',
+    '$dataTimer.Start()',
+    '$pageTimer.Start()',
+    '$form.Show()',
+    '[System.Windows.Forms.Application]::Run($form)',
+  ].join('\r\n') + '\r\n';
+}
+
 function startTray(port) {
   trayDesired = true;
   if (process.platform !== 'win32') {
@@ -4056,10 +4224,11 @@ function startTray(port) {
     console.log('[pulse] tray spawn suppressed (PULSE_NO_TRAY_SPAWN — test hook)');
     return;
   }
+  const style = trayStyle();
   const scriptPath = path.join(pulseHome(), 'tray.ps1');
   try {
     fs.mkdirSync(pulseHome(), { recursive: true });
-    fs.writeFileSync(scriptPath, trayScript(port));
+    fs.writeFileSync(scriptPath, style === 'strip' ? trayStripScript(port) : trayScript(port));
   } catch (e) {
     console.warn('[pulse] tray: could not write script: ' + e.message);
     return;
@@ -4261,14 +4430,19 @@ function startServer(port, host, opts) {
       if (route === '/api/tray/enable' || route === '/api/tray/disable') {
         if (!allowMutation(req, res)) return;
         const on = route.endsWith('enable');
-        writeConfig({ tray: on });
+        const styleQ = new URLSearchParams(parsed.query || '').get('style');
+        const patch = { tray: on };
+        if (on && (styleQ === 'strip' || styleQ === 'icon')) patch.trayStyle = styleQ;
+        writeConfig(patch);
         trayDesired = on;
-        console.log('[pulse] tray icon ' + (on ? 'enabled' : 'disabled') + ' from the dashboard');
-        // Enable starts it right now (Windows only); disable is picked up by
-        // the tray's own poll — it sees trayEnabled:false and exits (≤30s).
+        console.log('[pulse] tray ' + (on ? 'enabled (' + trayStyle() + ')' : 'disabled') + ' from the dashboard');
+        // Enable starts it right now (Windows only). Disable and style
+        // switches are picked up by the running tray's own poll: the feed
+        // carries trayEnabled + trayStyle, and a style mismatch triggers the
+        // same relaunch-from-rewritten-tray.ps1 handoff as a version change.
         if (on && process.platform === 'win32' && boundLoopback) startTray(port);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, tray: { supported: process.platform === 'win32', enabled: on } }));
+        res.end(JSON.stringify({ ok: true, tray: { supported: process.platform === 'win32', enabled: on, style: trayStyle() } }));
         return;
       }
       if (route === '/api/budget/set') {
