@@ -73,6 +73,18 @@ export function ServerPanel({ data, onStopped, gfx, delay = 0.36 }) {
     setBusy(null);
   }
 
+  async function onToggleTray() {
+    setBusy('tray');
+    try {
+      const on = !(data.tray && data.tray.enabled);
+      await postJson('/api/tray/' + (on ? 'enable' : 'disable'));
+      setNote(on
+        ? 'Tray icon starting — Windows hides new tray icons behind the ^ chevron; drag Pulse onto the taskbar once to pin it.'
+        : 'Tray icon disabled — it exits within ~30 seconds.');
+    } catch (e) { setNote('Could not toggle the tray: ' + e.message); }
+    setBusy(null);
+  }
+
   async function onToggleDiscord() {
     setBusy('discord');
     try {
@@ -189,6 +201,16 @@ export function ServerPanel({ data, onStopped, gfx, delay = 0.36 }) {
             ? 'Discord presence: on' + (data.discord.status === 'ok' ? '' : ' (' + data.discord.status + ')')
             : 'Discord presence: off')}
         </button>
+        {data.tray && data.tray.supported && (
+          <button
+            className="btn ghost"
+            onClick={onToggleTray}
+            disabled={busy === 'tray'}
+            title="Windows notification-area icon: live 5h-usage badge + today tooltip; left-click opens the mini overview as an app window. Windows hides new tray icons behind the ^ chevron until you drag them onto the taskbar."
+          >
+            {busy === 'tray' ? 'Saving…' : (data.tray.enabled ? 'Tray icon: on' : 'Tray icon: off')}
+          </button>
+        )}
         {gfx && (
           <button
             className="btn ghost"

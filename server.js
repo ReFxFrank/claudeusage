@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.20.1';
+const PULSE_VERSION = '1.21.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -2326,6 +2326,9 @@ function buildSummary(sourceFilter, opts) {
   }
   // Discord Rich Presence status (opt-in) — state only, no work done here.
   payload.discord = discordForPayload();
+  // Windows tray state — the Server panel shows the toggle only where the
+  // feature exists.
+  payload.tray = { supported: process.platform === 'win32', enabled: trayDesired !== null ? trayDesired : readConfig().tray === true };
   // Server-panel visibility into the process footprint (RSS + JS heap).
   try {
     const mu = process.memoryUsage();
@@ -3686,8 +3689,12 @@ function statuslineData() {
       ? { cost: s.currentBlock.cost, endsAt: s.currentBlock.end, official: !!s.currentBlock.official }
       : null,
     meters: statuslineMeterPcts(s),
+    // The tray polls this feed; when the toggle turns the tray off it sees
+    // trayEnabled:false here and exits itself. trayDesired covers a
+    // flag-started tray with no config key.
+    trayEnabled: trayDesired !== null ? trayDesired : readConfig().tray === true,
     version: PULSE_VERSION,
-  } : { today: null, version: PULSE_VERSION };
+  } : { today: null, trayEnabled: trayDesired !== null ? trayDesired : readConfig().tray === true, version: PULSE_VERSION };
   statuslineMemo = { at: now, data: d };
   return d;
 }
@@ -3931,34 +3938,85 @@ function openBrowser(port) {
 // dashboard / mini / Stop Pulse / Exit tray. A named mutex (per port) makes it
 // single-instance, and it exits by itself once the server stops answering.
 // ---------------------------------------------------------------------------
+// Effective tray state: --tray starts it without touching config, and the
+// dashboard toggle must override either source — the statusline feed reports
+// THIS (falling back to config when nothing has decided yet), or a
+// flag-started tray would read config tray!==true and kill itself in 30s.
+let trayDesired = null;
 function trayScript(port) {
   return [
     "$mtx = New-Object System.Threading.Mutex($false, 'PulseTray" + port + "')",
-    'if (-not $mtx.WaitOne(0)) { exit }',
+    // 10s (not 0): during a version handoff the new instance starts before
+    // the old one has released the mutex.
+    'if (-not $mtx.WaitOne(10000)) { exit }',
+    "$myVer = '" + PULSE_VERSION + "'",
     'Add-Type -AssemblyName System.Windows.Forms',
     'Add-Type -AssemblyName System.Drawing',
+    // GetHicon handles must be destroyed or every badge repaint leaks a GDI
+    // handle (2880/day at a 30s tick).
+    "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class PulseIconUtil{[DllImport(\"user32.dll\")]public static extern bool DestroyIcon(IntPtr h);}'",
     "$base = 'http://127.0.0.1:" + port + "'",
     '$ni = New-Object System.Windows.Forms.NotifyIcon',
     'try {',
     '  $exe = (Get-Process -Id ' + process.pid + ' -ErrorAction Stop).Path',
-    '  $ni.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon($exe)',
-    '} catch { $ni.Icon = [System.Drawing.SystemIcons]::Application }',
+    '  $baseIcon = [System.Drawing.Icon]::ExtractAssociatedIcon($exe)',
+    '} catch { $baseIcon = [System.Drawing.SystemIcons]::Application }',
+    '$script:curIcon = $baseIcon',
+    '$ni.Icon = $baseIcon',
     "$ni.Text = 'Pulse'",
     '$ni.Visible = $true',
+    // Live badge: the Claude 5h used-% painted on the icon, colored by level —
+    // the number is readable at a glance without hovering.
+    'function New-PulseBadge([string]$txt, [string]$hex) {',
+    '  $bmp = New-Object System.Drawing.Bitmap -ArgumentList 16, 16',
+    '  $g = [System.Drawing.Graphics]::FromImage($bmp)',
+    "  $g.SmoothingMode = 'AntiAlias'",
+    '  $bg = New-Object System.Drawing.SolidBrush -ArgumentList ([System.Drawing.ColorTranslator]::FromHtml($hex))',
+    '  $g.FillEllipse($bg, 0, 0, 15, 15)',
+    "  $f = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 6.5, ([System.Drawing.FontStyle]::Bold)",
+    '  $sf = New-Object System.Drawing.StringFormat',
+    "  $sf.Alignment = 'Center'; $sf.LineAlignment = 'Center'",
+    '  $rect = New-Object System.Drawing.RectangleF -ArgumentList 0, 0.5, 16, 15',
+    '  $g.DrawString($txt, $f, [System.Drawing.Brushes]::White, $rect, $sf)',
+    '  $g.Dispose(); $bg.Dispose(); $f.Dispose()',
+    '  $h = $bmp.GetHicon()',
+    '  $icon = [System.Drawing.Icon]::FromHandle($h).Clone()',
+    '  [void][PulseIconUtil]::DestroyIcon($h)',
+    '  $bmp.Dispose()',
+    '  return $icon',
+    '}',
+    'function Set-PulseIcon($icon) {',
+    '  $old = $script:curIcon',
+    '  $ni.Icon = $icon',
+    '  $script:curIcon = $icon',
+    '  if ($old -and -not [object]::ReferenceEquals($old, $baseIcon) -and -not [object]::ReferenceEquals($old, $icon)) { $old.Dispose() }',
+    '}',
+    // Left-click opens the mini overview as a chromeless app window (Edge is
+    // on every Windows 11 box); falls back to the default browser.
+    'function Open-PulseMini {',
+    "  try { Start-Process 'msedge' -ArgumentList ('--app=' + $base + '/#mini'), '--window-size=380,800' -ErrorAction Stop }",
+    '  catch { Start-Process ($base + \'/#mini\') }',
+    '}',
     '$menu = New-Object System.Windows.Forms.ContextMenuStrip',
     "[void]$menu.Items.Add('Open dashboard', $null, { Start-Process ($base + '/') })",
-    "[void]$menu.Items.Add('Open mini overview', $null, { Start-Process ($base + '/#mini') })",
+    "[void]$menu.Items.Add('Open mini overview', $null, { Open-PulseMini })",
     "[void]$menu.Items.Add('-')",
     "[void]$menu.Items.Add('Stop Pulse', $null, { try { Invoke-RestMethod -Method Post -Uri ($base + '/api/shutdown') -Headers @{ 'X-Pulse' = '1' } -TimeoutSec 3 | Out-Null } catch {}; $ni.Visible = $false; [System.Windows.Forms.Application]::Exit() })",
     "[void]$menu.Items.Add('Exit tray', $null, { $ni.Visible = $false; [System.Windows.Forms.Application]::Exit() })",
     '$ni.ContextMenuStrip = $menu',
-    "$ni.add_MouseClick({ if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Start-Process ($base + '/#mini') } })",
+    "$ni.add_MouseClick({ if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Open-PulseMini } })",
     '$script:fails = 0',
-    '$timer = New-Object System.Windows.Forms.Timer',
-    '$timer.Interval = 30000',
-    '$timer.add_Tick({',
+    'function Update-PulseTray {',
     '  try {',
     "    $s = Invoke-RestMethod -Uri ($base + '/api/statusline') -TimeoutSec 3",
+    // The dashboard toggle turns the tray off by flipping this field.
+    '    if ($s.trayEnabled -eq $false) { $ni.Visible = $false; [System.Windows.Forms.Application]::Exit(); return }',
+    // Server updated under us: the server rewrote tray.ps1 at startup, so
+    // relaunch from the fresh file and hand over the mutex.
+    '    if ($s.version -and $s.version -ne $myVer) {',
+    "      Start-Process 'powershell.exe' -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $PSCommandPath",
+    '      $ni.Visible = $false; [System.Windows.Forms.Application]::Exit(); return',
+    '    }',
     "    $t = 'Pulse'",
     "    if ($s.today) { $t = 'Pulse - today $' + [math]::Round([double]$s.today.cost, 2) }",
     '    $m = $s.meters',
@@ -3966,21 +4024,36 @@ function trayScript(port) {
     "    if ($m -and $m.claudeWeekly -ne $null) { $t = $t + ' - wk ' + $m.claudeWeekly + '%' }",
     '    if ($t.Length -gt 63) { $t = $t.Substring(0, 63) }',
     '    $ni.Text = $t',
+    '    if ($m -and $m.claudeFiveHour -ne $null) {',
+    '      $p = [int]$m.claudeFiveHour',
+    "      $txt = if ($p -ge 100) { '!' } else { [string]$p }",
+    "      $hex = if ($p -ge 85) { '#f27878' } elseif ($p -ge 60) { '#e0a132' } else { '#22b892' }",
+    '      Set-PulseIcon (New-PulseBadge $txt $hex)',
+    '    } else { Set-PulseIcon $baseIcon }',
     '    $script:fails = 0',
     '  } catch {',
     '    $script:fails = $script:fails + 1',
     "    $ni.Text = 'Pulse - server not responding'",
     '    if ($script:fails -ge 6) { $ni.Visible = $false; [System.Windows.Forms.Application]::Exit() }',
     '  }',
-    '})',
+    '}',
+    '$timer = New-Object System.Windows.Forms.Timer',
+    '$timer.Interval = 30000',
+    '$timer.add_Tick({ Update-PulseTray })',
+    'Update-PulseTray', // first paint immediately, not 30s in
     '$timer.Start()',
     '[System.Windows.Forms.Application]::Run()',
     '$ni.Visible = $false',
   ].join('\r\n') + '\r\n';
 }
 function startTray(port) {
+  trayDesired = true;
   if (process.platform !== 'win32') {
     console.log('[pulse] --tray is Windows-only (notification-area icon) — ignored on this OS.');
+    return;
+  }
+  if (process.env.PULSE_NO_TRAY_SPAWN) {
+    console.log('[pulse] tray spawn suppressed (PULSE_NO_TRAY_SPAWN — test hook)');
     return;
   }
   const scriptPath = path.join(pulseHome(), 'tray.ps1');
@@ -4183,6 +4256,19 @@ function startServer(port, host, opts) {
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, discord: discordForPayload() }));
+        return;
+      }
+      if (route === '/api/tray/enable' || route === '/api/tray/disable') {
+        if (!allowMutation(req, res)) return;
+        const on = route.endsWith('enable');
+        writeConfig({ tray: on });
+        trayDesired = on;
+        console.log('[pulse] tray icon ' + (on ? 'enabled' : 'disabled') + ' from the dashboard');
+        // Enable starts it right now (Windows only); disable is picked up by
+        // the tray's own poll — it sees trayEnabled:false and exits (≤30s).
+        if (on && process.platform === 'win32' && boundLoopback) startTray(port);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, tray: { supported: process.platform === 'win32', enabled: on } }));
         return;
       }
       if (route === '/api/budget/set') {

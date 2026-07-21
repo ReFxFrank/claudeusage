@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.21.0
+
+- **Tray icon, now actually visible and useful.** Three fixes from real-world
+  feedback ("I don't see it in the Windows tray"):
+  - **One-click enable** — a **Tray icon: off/on** toggle in the Server panel
+    (Windows only, `POST /api/tray/enable|disable`); no terminal or config
+    editing. Turning it off makes the running tray exit by itself within ~30s.
+    Note: Windows hides NEW tray icons behind the `^` overflow chevron — drag
+    the Pulse icon onto the taskbar once to pin it (apps cannot self-pin).
+  - **Live badge on the icon** — the Claude 5-hour used-% is painted onto the
+    icon itself (green → amber ≥60% → red ≥85%, `!` at 100%), so the number is
+    on your taskbar without hovering. GDI icon handles are destroyed on every
+    repaint (no handle leak at the 30s cadence), and the badge falls back to
+    the app icon when meters are off.
+  - **Left-click opens a real panel** — the mini overview now opens as a
+    chromeless Edge app window (380×800) instead of a browser tab, falling
+    back to the default browser when Edge is absent. First tooltip/badge paint
+    happens immediately, not 30 seconds in.
+
 ## v1.20.1
 
 - **Long lists collapse:** the By model / By source / By project bars now show
