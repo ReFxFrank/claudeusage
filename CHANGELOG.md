@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.20.0
+
+- **Mini overview v2:** the `#mini` panel grew into a full at-a-glance
+  overview. A **Total Spend** card with Today / Yesterday / 30-Days tabs, a
+  per-source **donut** (same colors as the dashboard) with a dollar legend,
+  and Today / Yesterday / Last-30-Days rows with token counts. Meter bars now
+  carry a **"~N% left at reset"** projection — a straight-line extrapolation
+  of your recent burn rate (sampled from the account-meter refreshes Pulse
+  already makes; needs ~10 minutes of observation before it appears, clears
+  itself when a window rolls over, and never invents a trend from a flat
+  line).
+- **Windows tray icon (opt-in):** run `pulse --tray` (or set
+  `{"tray": true}`) and Pulse lives in the notification area — tooltip with
+  today's spend and 5h/weekly percentages (refreshed from the local
+  statusline feed; the tray never talks to any provider), left-click opens
+  the mini overview, right-click offers Open dashboard / Open mini / Stop
+  Pulse / Exit tray. Hand-rolled with zero dependencies: Pulse writes a
+  PowerShell script to `~/.pulse` and spawns it detached; it is
+  single-instance per port and exits by itself when the server stops.
+- **~40% less memory.** Three changes cut the server's footprint (measured
+  205 MB → 128 MB on a 50k-entry synthetic history): repeated strings
+  (model / source / project / session ids) are interned so each distinct
+  value is stored once; two per-entry id strings that were only ever used to
+  build the dedup key are no longer retained; and unfiltered summary builds
+  are memoized for 2.5 s, so the dashboard poll, Discord tick, and status
+  line stop rebuilding identical payloads back-to-back (config changes bust
+  the memo instantly). The Server panel now shows live **memory** (RSS +
+  heap) so you can see it.
+
 ## v1.19.0
 
 - **Mini side overview:** a compact, always-glanceable panel at

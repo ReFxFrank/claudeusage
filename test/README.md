@@ -31,6 +31,7 @@ bash test/discord.test.sh     # one suite
 | `budget.test.sh` | Budget goal: `payload.budget` spend/target/pct + ok/warn/over states, month vs week periods, month-end projection (`projected` = spent/elapsed, null for week), POST set + clear |
 | `comparison.test.sh` | Period-over-period: each period's `prev` = previous equal-length window totals (rolling N-day + calendar month), zero when no prior data |
 | `export.test.sh` | CSV/JSON export: daily/per-source columns + UTF-8 BOM, exact per-model costs, RFC-4180 quoting, `?sources=` scoping, attachment headers, 400/404 paths, foreign-Host 403 |
+| `projection.test.sh` | Meter burn projection (`projLeftAtReset` from rising utilization, below current % left, clamped ≥0, null without resets_at), summary memo (same build ≤2.5s, config write busts), `payload.memory` rss/heap |
 
 Conventions when adding tests: fixture homes via `mktemp -d` + `CLAUDE_DIR` /
 `CODEX_DIR` / `PULSE_HOME` env; per-suite fixed port; fake tokens only, with

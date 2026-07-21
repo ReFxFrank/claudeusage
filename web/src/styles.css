@@ -85,7 +85,16 @@ body::after {
 /* ---------- grid ---------- */
 .grid { display: grid; gap: 16px; }
 .stats { grid-template-columns: repeat(4, 1fr); margin-bottom: 16px; }
-.cols-2 { grid-template-columns: 1fr 1fr; margin-bottom: 16px; }
+/* align-items start: a shorter card (e.g. 3 sources next to 5 models) sizes to
+   its content instead of stretching to its neighbour with a slab of dead
+   space at the bottom. */
+.cols-2 { grid-template-columns: 1fr 1fr; margin-bottom: 16px; align-items: start; }
+
+/* Uniform vertical rhythm: every TOP-LEVEL section sits 16px above the next,
+   whether it is a bare card (Account limits, Spend, Heatmap, Sessions, Server)
+   or a grid/panel that carries its own margin. Cards nested inside grids are
+   spaced by the grid gap and are deliberately not matched here. */
+.wrap > .card { margin-bottom: 16px; }
 @media (max-width: 960px) { .stats { grid-template-columns: repeat(2, 1fr); } .cols-2 { grid-template-columns: 1fr; } }
 @media (max-width: 560px) { .stats { grid-template-columns: 1fr; } }
 
@@ -384,6 +393,34 @@ footer .reading { margin-top: 12px; font-family: var(--mono); font-size: 11.5px;
 .minispend b { font-family: var(--mono); color: var(--text); font-weight: 600; }
 .minitrend { display: flex; align-items: flex-end; gap: 2px; height: 36px; }
 .minitrend i { flex: 1; min-width: 2px; border-radius: 2px 2px 0 0; background: rgba(155, 140, 255, 0.55); }
+.minilblrow { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
+.minilblrow .minilbl { margin-bottom: 0; }
+.miniproj { font-size: 10.5px; color: var(--text-3); cursor: help; }
+.minitabs {
+  display: flex; gap: 4px; background: rgba(255, 255, 255, 0.05);
+  border-radius: 9px; padding: 3px; margin-bottom: 12px;
+}
+.minitab {
+  flex: 1; font: inherit; font-size: 11.5px; color: var(--text-3); cursor: pointer;
+  background: transparent; border: 0; border-radius: 7px; padding: 5px 0;
+}
+.minitab.on { background: rgba(155, 140, 255, 0.18); color: var(--text); }
+.minidonutrow { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
+.minidonut { width: 108px; height: 108px; flex: none; }
+.minidonutlbl { fill: var(--text); font-family: var(--mono); font-size: 15px; font-weight: 600; }
+.minilegend { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.minilegrow { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+.minilegrow i { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.minilegname { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.minilegval { margin-left: auto; font-family: var(--mono); color: var(--text); }
+.ministats { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+.ministat { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
+.ministat span { color: var(--text-3); }
+.ministat b { margin-left: auto; font-family: var(--mono); color: var(--text); font-weight: 600; }
+.ministat em { font-style: normal; font-family: var(--mono); color: var(--text-3); font-size: 11px; }
+.minitrendhead { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 5px; }
+.minitrendhead span { font-size: 11px; color: var(--text-2); font-weight: 600; }
+.minitrendhead em { font-style: normal; font-size: 10.5px; color: var(--text-3); }
 
 /* ---- connect-your-Claude-account card (meters, no login found) ---- */
 .connectclaude {

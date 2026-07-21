@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.19.0';
+const PULSE_VERSION = '1.20.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -123,6 +123,9 @@ function writeConfig(patch) {
   } catch (e) {
     console.warn('[pulse] could not write config: ' + e.message);
   }
+  // Config affects the summary payload (budget, meters, alerts, …) — a memoized
+  // payload must never outlive a settings change.
+  summaryMemo = { at: 0, payload: null };
   return next;
 }
 
@@ -692,6 +695,21 @@ function parseEffortStdout(stdout) {
   return null;
 }
 
+// String intern pool. model/source/project/sessionId values repeat across
+// tens of thousands of retained entries, and JSON.parse allocates a FRESH
+// string for each occurrence — interning keeps one copy per distinct value,
+// which is a real RSS win on large histories. Capped so a pathological log
+// (e.g. unique session ids forever) can't grow the pool unbounded; overflow
+// strings simply skip the pool.
+const _intern = new Map();
+function intern(s) {
+  if (typeof s !== 'string' || !s) return s;
+  const hit = _intern.get(s);
+  if (hit !== undefined) return hit;
+  if (_intern.size < 50000) _intern.set(s, s);
+  return s;
+}
+
 // Turn one assistant-with-usage record into a normalized Entry, or null if the
 // record carries no usage.
 function normalize(rec) {
@@ -721,25 +739,25 @@ function normalize(rec) {
   const e = {
     ts,
     provider: 'anthropic',
-    model: msg.model || 'unknown',
-    source: rec.entrypoint || 'cli', // §3.4 — default cli when absent
+    model: intern(msg.model || 'unknown'),
+    source: intern(rec.entrypoint || 'cli'), // §3.4 — default cli when absent
     // Execution mode as recorded by Claude Code. NOTE: reasoning effort
     // (high/xhigh/max) and "ultracode" are request-time settings NOT written to
     // the transcript — they are recovered separately from the effort sidecar
     // (see --effort-setup) and joined on in annotateModes(). `speed` (fast vs
     // standard) and `service_tier` are the only runtime modes logged here.
-    speed: u.speed || 'standard',
-    serviceTier: u.service_tier || 'standard',
+    speed: intern(u.speed || 'standard'),
+    serviceTier: intern(u.service_tier || 'standard'),
     inputTokens: num(u.input_tokens),
     outputTokens: num(u.output_tokens),
     cacheWrite5m,
     cacheWrite1h,
     cacheRead: num(u.cache_read_input_tokens),
     webSearches: num(stu.web_search_requests),
-    sessionId: rec.sessionId || '',
-    project: rec.cwd || '',
-    messageId: (msg.id) || '',
-    requestId: rec.requestId || '',
+    sessionId: intern(rec.sessionId || ''),
+    project: intern(rec.cwd || ''),
+    // messageId/requestId are folded into `key` (dedupKey) at parse time and
+    // never read again — retaining two unique strings per entry was pure RSS.
     key: dedupKey(rec),
   };
   e.cost = costForEntry(e);
@@ -988,12 +1006,16 @@ function parseCodexFile(filePath) {
 
 // Shared skeleton for an agent usage entry (fields every aggregation reads).
 function agentEntry(fields) {
-  return {
+  const e = {
     speed: 'standard', serviceTier: 'standard',
     inputTokens: 0, outputTokens: 0, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0,
-    webSearches: 0, sessionId: '', project: '', messageId: '', requestId: '',
+    webSearches: 0, sessionId: '', project: '',
     ...fields,
   };
+  // Same interning as normalize() — agent logs repeat these just as heavily.
+  e.model = intern(e.model); e.source = intern(e.source);
+  e.sessionId = intern(e.sessionId); e.project = intern(e.project);
+  return e;
 }
 
 // Gemini CLI — one JSON object per line; usage records carry a `tokens` object
@@ -1027,7 +1049,7 @@ function parseGeminiFile(filePath) {
       ts, provider: 'google', model: String(rec.model || 'gemini-unknown'), source: 'gemini',
       inputTokens, outputTokens, cacheRead: cached,
       sessionId: sid, project: String(rec.projectRoot || rec.cwd || ''),
-      messageId: id, key: 'gm:' + id,
+      key: 'gm:' + id, // the id lives on in the key; a separate field was pure RSS
     });
     e.cost = costForEntry(e);
     byId.set(id, e); // last write wins
@@ -2218,8 +2240,19 @@ function collectTitles(obj, fileName, map) {
 // the account-meter refresh (see metersForPayload); the dashboard drives it at
 // the normal cadence. This keeps Pulse from polling the shared, rate-limited
 // usage endpoint every couple of minutes around the clock.
+const SUMMARY_MEMO_MS = 2500; // unfiltered payloads are shared this long
+let summaryMemo = { at: 0, payload: null };
 function buildSummary(sourceFilter, opts) {
   const background = !!(opts && opts.background);
+  // Unfiltered builds share a short-lived memo: the dashboard poll (10s), the
+  // Discord tick (15s), and the statusline feed (3s memo of its own) all want
+  // the same payload, and with several consumers active the full aggregation
+  // used to run back-to-back — pure allocation churn for identical output.
+  // Busted by writeConfig() so a settings change is never masked.
+  if (!sourceFilter && summaryMemo.payload && Date.now() - summaryMemo.at < SUMMARY_MEMO_MS) {
+    return summaryMemo.payload;
+  }
+  const buildT0 = Date.now();
   const { entries, sessionMeta, ultracodeSessions, effortEvents, fileCount, codexFileCount, codexRateSnapshot } = parseAll();
   const desktopTitles = readDesktopTitles();
   const now = Date.now();
@@ -2289,6 +2322,15 @@ function buildSummary(sourceFilter, opts) {
   }
   // Discord Rich Presence status (opt-in) — state only, no work done here.
   payload.discord = discordForPayload();
+  // Server-panel visibility into the process footprint (RSS + JS heap).
+  try {
+    const mu = process.memoryUsage();
+    payload.memory = { rss: mu.rss, heapUsed: mu.heapUsed };
+  } catch (_) { /* never let a stats call break the payload */ }
+  // Stamped BEFORE the memo store so memo hits carry the timing of the build
+  // they actually serve — request handlers must never mutate a shared payload.
+  payload.buildMs = Date.now() - buildT0;
+  if (!sourceFilter) summaryMemo = { at: Date.now(), payload };
   return payload;
 }
 
@@ -3066,6 +3108,7 @@ function refreshAccountMeters(done) {
     // Stable, meaningful order: 5h, then overall weekly, then scoped windows.
     const rank = (k) => (k === 'five_hour' ? 0 : k === 'seven_day' || k === 'seven_day_overall' ? 1 : 2);
     buckets.sort((a, b) => rank(a.key) - rank(b.key) || a.key.localeCompare(b.key));
+    recordMeterSamples(buckets);
     metersState.buckets = buckets;
     metersState.status = 'ok';
     metersState.lastGoodAt = Date.now();
@@ -3654,6 +3697,49 @@ const BACKGROUND_METERS_MS = 15 * 60 * 1000;
 // Lazily refresh on summary builds; serve the cached state immediately.
 // background=true (status line, Discord) only triggers a refresh when the data
 // is already quite stale; the dashboard (background=false) uses the normal gate.
+// Per-bucket (ts, pct) sample history for the "~N% left at reset" projection.
+// In-memory only, bounded, and self-clearing when a window rolls over (a pct
+// DROP means the window reset — earlier samples describe a dead window).
+const METER_PROJ_MIN_MS = parseInt(process.env.PULSE_METER_PROJ_MIN_MS || '', 10) || 10 * 60e3;
+const METER_PROJ_WINDOW_MS = 2 * 3600e3; // project from at most the last 2h
+const _meterSamples = new Map(); // key -> { resetsAt, arr: [{ts, pct}] }
+function recordMeterSamples(buckets) {
+  const now = Date.now();
+  for (const b of buckets) {
+    if (typeof b.pct !== 'number' || !isFinite(b.pct)) continue;
+    let st = _meterSamples.get(b.key);
+    if (!st) { st = { resetsAt: b.resetsAt || null, arr: [] }; _meterSamples.set(b.key, st); }
+    // A window roll shows up as the pct FALLING or resets_at JUMPING a whole
+    // window forward — and a roll under load can land the new pct HIGHER than
+    // the old one, so the pct check alone is not enough. Dead-window samples
+    // must never pollute the new window's slope. The 2-minute tolerance
+    // absorbs server-side jitter in the reported reset time.
+    const resetJumped = b.resetsAt && st.resetsAt && Math.abs(b.resetsAt - st.resetsAt) > 120e3;
+    const pctDropped = st.arr.length && b.pct < st.arr[st.arr.length - 1].pct - 0.5;
+    if (resetJumped || pctDropped) st.arr.length = 0;
+    if (b.resetsAt) st.resetsAt = b.resetsAt;
+    st.arr.push({ ts: now, pct: b.pct });
+    while (st.arr.length && now - st.arr[0].ts > METER_PROJ_WINDOW_MS) st.arr.shift();
+    if (st.arr.length > 200) st.arr.splice(0, st.arr.length - 200);
+  }
+}
+// Straight-line projection of "% left when the window resets" from the recent
+// burn rate. Only offered with enough observation time and a real reset time;
+// a flat or falling trend projects to the CURRENT remaining (no invention).
+function projectedLeftAtReset(b) {
+  if (typeof b.pct !== 'number' || !b.resetsAt) return null;
+  const st = _meterSamples.get(b.key);
+  const arr = st && st.arr;
+  if (!arr || arr.length < 2) return null;
+  const first = arr[0], last = arr[arr.length - 1];
+  if (last.ts - first.ts < METER_PROJ_MIN_MS) return null;
+  const slope = (last.pct - first.pct) / (last.ts - first.ts); // pct per ms
+  const remainingMs = b.resetsAt - Date.now();
+  if (remainingMs <= 0) return null;
+  const projUsed = b.pct + Math.max(0, slope) * remainingMs;
+  return Math.max(0, Math.round(100 - projUsed));
+}
+
 function metersForPayload(background) {
   if (!metersEnabled()) return { enabled: false };
   const due = Date.now() >= (metersState.nextAttemptAt || 0);
@@ -3664,7 +3750,9 @@ function metersForPayload(background) {
   return {
     enabled: true,
     status: metersState.status === 'off' ? 'loading' : metersState.status,
-    buckets: metersState.buckets,
+    // Attach the burn-rate projection per bucket (null until observed long
+    // enough). Fresh objects — the state buckets stay unclobbered.
+    buckets: (metersState.buckets || []).map((b) => ({ ...b, projLeftAtReset: projectedLeftAtReset(b) })),
     fetchedAt: metersState.fetchedAt,
     lastGoodAt: metersState.lastGoodAt,
     error: metersState.error,
@@ -3829,6 +3917,91 @@ function openBrowser(port) {
   try { require('child_process').exec(`start "" "http://localhost:${port}"`, { windowsHide: true }); } catch (_) {}
 }
 
+// ---------------------------------------------------------------------------
+// WINDOWS TRAY (opt-in: --tray or {"tray": true})
+// A hand-rolled notification-area icon with zero dependencies: Pulse writes a
+// PowerShell script to ~/.pulse (the only writable location) and spawns it
+// detached. The script owns a WinForms NotifyIcon: tooltip refreshed from the
+// slim /api/statusline feed (loopback only — the tray never talks to any
+// provider), left-click opens the mini overview, right-click menu offers the
+// dashboard / mini / Stop Pulse / Exit tray. A named mutex (per port) makes it
+// single-instance, and it exits by itself once the server stops answering.
+// ---------------------------------------------------------------------------
+function trayScript(port) {
+  return [
+    "$mtx = New-Object System.Threading.Mutex($false, 'PulseTray" + port + "')",
+    'if (-not $mtx.WaitOne(0)) { exit }',
+    'Add-Type -AssemblyName System.Windows.Forms',
+    'Add-Type -AssemblyName System.Drawing',
+    "$base = 'http://127.0.0.1:" + port + "'",
+    '$ni = New-Object System.Windows.Forms.NotifyIcon',
+    'try {',
+    '  $exe = (Get-Process -Id ' + process.pid + ' -ErrorAction Stop).Path',
+    '  $ni.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon($exe)',
+    '} catch { $ni.Icon = [System.Drawing.SystemIcons]::Application }',
+    "$ni.Text = 'Pulse'",
+    '$ni.Visible = $true',
+    '$menu = New-Object System.Windows.Forms.ContextMenuStrip',
+    "[void]$menu.Items.Add('Open dashboard', $null, { Start-Process ($base + '/') })",
+    "[void]$menu.Items.Add('Open mini overview', $null, { Start-Process ($base + '/#mini') })",
+    "[void]$menu.Items.Add('-')",
+    "[void]$menu.Items.Add('Stop Pulse', $null, { try { Invoke-RestMethod -Method Post -Uri ($base + '/api/shutdown') -Headers @{ 'X-Pulse' = '1' } -TimeoutSec 3 | Out-Null } catch {}; $ni.Visible = $false; [System.Windows.Forms.Application]::Exit() })",
+    "[void]$menu.Items.Add('Exit tray', $null, { $ni.Visible = $false; [System.Windows.Forms.Application]::Exit() })",
+    '$ni.ContextMenuStrip = $menu',
+    "$ni.add_MouseClick({ if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Start-Process ($base + '/#mini') } })",
+    '$script:fails = 0',
+    '$timer = New-Object System.Windows.Forms.Timer',
+    '$timer.Interval = 30000',
+    '$timer.add_Tick({',
+    '  try {',
+    "    $s = Invoke-RestMethod -Uri ($base + '/api/statusline') -TimeoutSec 3",
+    "    $t = 'Pulse'",
+    "    if ($s.today) { $t = 'Pulse - today $' + [math]::Round([double]$s.today.cost, 2) }",
+    '    $m = $s.meters',
+    "    if ($m -and $m.claudeFiveHour -ne $null) { $t = $t + ' - 5h ' + $m.claudeFiveHour + '%' }",
+    "    if ($m -and $m.claudeWeekly -ne $null) { $t = $t + ' - wk ' + $m.claudeWeekly + '%' }",
+    '    if ($t.Length -gt 63) { $t = $t.Substring(0, 63) }',
+    '    $ni.Text = $t',
+    '    $script:fails = 0',
+    '  } catch {',
+    '    $script:fails = $script:fails + 1',
+    "    $ni.Text = 'Pulse - server not responding'",
+    '    if ($script:fails -ge 6) { $ni.Visible = $false; [System.Windows.Forms.Application]::Exit() }',
+    '  }',
+    '})',
+    '$timer.Start()',
+    '[System.Windows.Forms.Application]::Run()',
+    '$ni.Visible = $false',
+  ].join('\r\n') + '\r\n';
+}
+function startTray(port) {
+  if (process.platform !== 'win32') {
+    console.log('[pulse] --tray is Windows-only (notification-area icon) — ignored on this OS.');
+    return;
+  }
+  const scriptPath = path.join(pulseHome(), 'tray.ps1');
+  try {
+    fs.mkdirSync(pulseHome(), { recursive: true });
+    fs.writeFileSync(scriptPath, trayScript(port));
+  } catch (e) {
+    console.warn('[pulse] tray: could not write script: ' + e.message);
+    return;
+  }
+  try {
+    const child = require('child_process').spawn('powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', scriptPath],
+      { detached: true, stdio: 'ignore', windowsHide: true });
+    // Spawn failures surface as an ASYNC 'error' event, not a throw — without
+    // this listener a blocked/missing powershell.exe would crash the whole
+    // server (and with {"tray": true} persisted, crash-loop every start).
+    child.on('error', (e) => console.warn('[pulse] tray failed to start: ' + e.message));
+    child.unref();
+    console.log('[pulse] tray icon started (Windows notification area) — right-click it for the menu.');
+  } catch (e) {
+    console.warn('[pulse] tray failed to start: ' + e.message);
+  }
+}
+
 function startServer(port, host, opts) {
   const boundLoopback = LOOPBACK_HOSTS.has(host);
   const server = http.createServer((req, res) => {
@@ -3855,7 +4028,6 @@ function startServer(port, host, opts) {
           if (names.length) sourceFilter = new Set(names);
         }
         const payload = buildSummary(sourceFilter);
-        payload.buildMs = Date.now() - t0;
         console.log(`[pulse] /api/summary built in ${payload.buildMs}ms`);
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(payload));
@@ -4081,6 +4253,9 @@ function startServer(port, host, opts) {
     if (seaApi && process.platform === 'win32' && (!opts || opts.open !== false) && LOOPBACK_HOSTS.has(host)) {
       openBrowser(port);
     }
+    // Windows notification-area icon (opt-in) — loopback only, self-exits
+    // when the server stops.
+    if (opts && opts.tray && LOOPBACK_HOSTS.has(host)) startTray(port);
     if (LOOPBACK_HOSTS.has(host)) {
       console.log(`  open: http://localhost:${port}\n`);
     } else {
@@ -4585,6 +4760,7 @@ function parseArgs(argv) {
     else if (a === '--statusline') { out.statusline = true; }
     else if (a === '--statusline-setup') { out.statuslineSetup = true; }
     else if (a === '--no-open') { out.noOpen = true; }
+    else if (a === '--tray') { out.tray = true; }
     else if (a === '--no-daemon') { out.noDaemon = true; }
     else if (a === '--daemon-child') { out.daemonChild = true; }
     else if (a === '--after-update') { out.afterUpdate = true; }
@@ -4608,6 +4784,8 @@ function serverOpts(args) {
     // another tab would duplicate it.
     open: !args.noOpen && !args.afterUpdate,
     updateCheck: updateCheckEnabled(args),
+    // Windows tray icon: --tray flag or {"tray": true} in config.
+    tray: !!args.tray || readConfig().tray === true,
     // an updated/replacing instance may need a moment for the old one's port
     retryBindUntil: (args.afterUpdate || args.daemonChild) ? Date.now() + 10000 : 0,
   };
@@ -4686,7 +4864,9 @@ function main() {
     console.log('                    effort level to ' + modesFilePath());
     console.log('  --no-open         do not auto-open the browser (packaged exe only)');
     console.log('  --stop            stop the running Pulse instance and exit');
-    console.log('  --install-shortcuts  (Windows) add "Pulse" and "Pulse - Stop"');
+    console.log('  --tray               (Windows) notification-area icon: live spend/limit');
+  console.log('                       tooltip, open dashboard/mini, stop. Or {"tray": true}.');
+  console.log('  --install-shortcuts  (Windows) add "Pulse" and "Pulse - Stop"');
     console.log('                    shortcuts to the Desktop');
     console.log('  --no-daemon       (Windows exe) keep running in this console window');
     console.log('                    instead of backgrounding');

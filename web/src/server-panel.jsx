@@ -151,6 +151,11 @@ export function ServerPanel({ data, onStopped, gfx, delay = 0.36 }) {
       <div className="facts srvfacts">
         <div className="fact">version<b>v{data.version || '?'}</b></div>
         <div className="fact">uptime<b>{uptime}</b></div>
+        {data.memory && data.memory.rss > 0 && (
+          <div className="fact" title="Server process memory: resident set (JS heap in parentheses)">
+            memory<b>{Math.round(data.memory.rss / 1048576)} MB ({Math.round(data.memory.heapUsed / 1048576)} MB heap)</b>
+          </div>
+        )}
         <div className="fact">mode<b>{data.daemon ? 'background' : 'console'}{data.packaged ? '' : ' · source'}</b></div>
         <div className="fact">updates<b className={upd.status === 'available' ? 'updavail' : ''}>{updText}</b></div>
       </div>

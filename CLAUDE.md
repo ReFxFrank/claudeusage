@@ -67,7 +67,10 @@ the old name; git remotes redirect).
 | Status line | `--statusline` (reads Claude Code's stdin JSON, fetches slim `/api/statusline` from the running server via `~/.pulse/server.json` port, prints an ANSI line; fail-open, always exit 0), `statuslineData`/`statuslineMemo` (3s), `--statusline-setup` prints the settings.json snippet (never writes `~/.claude`); `NO_COLOR` respected |
 | Limit alerts | `computeAlerts(meters, codexMeters)` → `payload.alerts` (both Claude buckets + Codex snapshot buckets ≥ lowest threshold, deduped by `provider:key`, provider-labelled, sorted most-urgent-first, skips `stale`; **drops maxed windows** — rounded pct ≥ 100 is a reached limit, not "approaching", so it's excluded from the banner + notifications though it still shows in the meter gauges); `alertsEnabled()` (`{"alerts": false}` off), `alertThresholds()` (config `alertThresholds`, default `[80,95]`); **spend anomaly (opt-in)**: `computeSpendAnomaly(periods, now)` unshifted onto alerts — fires when today ≥ multiplier × mean of ACTIVE prior days in last30 (≥5 active days, today ≥ $5); config `anomalyAlerts === true` + `anomalyMultiplier` (default 3, floor 1.5); row has `kind:'anomaly'`, `detail`, `ratio`, pct null, date-keyed `pulse:anomaly:YYYY-MM-DD` so notifications fire once/day; UI: `AlertsBar` (panels.jsx — anomaly rows render `detail`, headline "Unusual spend —" when anomaly-only) + browser notifications in lib.js (`fireAlertNotifications` dedups via `localStorage` key `pulse-alerted`, alertKey `key\|threshold\|resetsAt`; anomaly body uses `detail`) |
 | Activity heatmap | `aggregate` builds `payload.heatmap` = `{grid:[7][24]{cost,tokens,messages}, maxCost, maxMessages}` from `asc` entries via local `getDay()`/`getHours()`; LIVE-only (archive keeps no per-hour detail); UI: `Heatmap` (panels.jsx), gated on `heatmap.maxCost > 0` |
-| Mini side overview | frontend-only hash route `#mini` (no server changes): `MiniOverview` (web/src/mini.jsx) renders Claude/Codex meter buckets as "% left" bars (`100 - pct`, hot/warm coloring by USED pct, stale rows dimmed) + today/last30 spend + `MiniTrend` daily bars; App.jsx hashchange listener + `◧ mini` header button (`window.open` 340×760 popup); degrades to hints when meters are off/no-login; solid surfaces only (lite-safe) |
+| Mini side overview | hash route `#mini`: `MiniOverview` (web/src/mini.jsx) renders Claude/Codex meter buckets as "% left" bars (`100 - pct`, hot/warm coloring by USED pct, stale rows dimmed, `~N% left at reset` line when `projLeftAtReset` present) + `MiniDonut` (SVG stroke segments, per-source colors via `makeColorMap`) with Today\|Yesterday\|30-Days tabs (day buckets from last30.daily) + Today/Yesterday/30d stat rows + `MiniTrend` daily bars; App.jsx hashchange listener + `◧ mini` header button (`window.open` 340×760 popup); degrades to hints when meters are off/no-login/expired; Spend label follows `payload.sourceFilter`; solid surfaces only (lite-safe) |
+| Meter burn projection | `recordMeterSamples` (on each meters refresh; per-key ring buffer, 2h window, clears on pct DROP = window rolled) + `projectedLeftAtReset` (straight-line slope over ≥ `PULSE_METER_PROJ_MIN_MS` (default 10m) of samples → `projLeftAtReset` per bucket in `metersForPayload`, null without resetsAt/enough data; `Math.max(0, slope)` so a falling trend never projects a refill) |
+| Windows tray (opt-in) | `--tray` flag or config `tray: true` → `startTray(port)` (win32 + loopback only): writes `trayScript(port)` to `~/.pulse/tray.ps1`, spawns detached hidden powershell (NotifyIcon; icon extracted from the server exe; named mutex `PulseTray<port>` = single instance; tooltip from GET `/api/statusline` every 30s — `today.cost` + `meters.claudeFiveHour/claudeWeekly`; left-click opens `#mini`, menu Open dashboard/mini + POST shutdown w/ X-Pulse + Exit; self-exits after 6 failed polls) |
+| Memory footprint | `intern()` pool (capped 50k) for model/source/speed/serviceTier/sessionId/project in `normalize` + `agentEntry` (JSON.parse allocates fresh strings per occurrence); entries no longer retain messageId/requestId (folded into `key` at parse); `summaryMemo` (`SUMMARY_MEMO_MS` 2.5s, unfiltered builds only, busted by `writeConfig`); `payload.memory` = `{rss, heapUsed}` → Server-panel "memory" fact. Measured 205→128 MB on a 50k-entry fixture |
 
 ## Config (`~/.pulse/config.json`) and env overrides
 
@@ -82,7 +85,7 @@ unless `false`), `alerts` (limit alerts; on unless `false`), `alertThresholds`
 opt-in, `=== true` only) + `anomalyMultiplier` (trigger ratio; default 3, floor
 1.5), `budget` (USD spend target; unset =
 off) + `budgetPeriod` (`month`|`week`, default month; set via `/api/budget/set`),
-`updateCheck`.
+`tray` (Windows notification-area icon; also `--tray`), `updateCheck`.
 
 Test/dev env hooks: `PULSE_HOME`, `CLAUDE_DIR`/`CLAUDE_CONFIG_DIR`,
 `CODEX_DIR`/`CODEX_HOME`, `GEMINI_DIR`/`GEMINI_CLI_HOME`,
@@ -91,6 +94,7 @@ Test/dev env hooks: `PULSE_HOME`, `CLAUDE_DIR`/`CLAUDE_CONFIG_DIR`,
 `PULSE_METERS_CACHE_MS`, `PULSE_CODEX_USAGE_API`, `PULSE_CODEX_USAGE_CACHE_MS`,
 `PULSE_DISCORD_IPC`, `PULSE_DISCORD_TICK_MS`, `PULSE_DISCORD_ROTATE_MS`,
 `PULSE_DISCORD_CLIENT_ID`, `PULSE_MODES_FILE`, `PULSE_FAKE_DARWIN`,
+`PULSE_METER_PROJ_MIN_MS`,
 `PULSE_UPDATE_API` (update-check endpoint override), `PULSE_NO_UPDATE_CHECK`
 (env form of `--no-update-check`), `PULSE_UPDATE_NO_RELAUNCH` (test hook),
 `PULSE_SECURITY_BIN` (macOS Keychain `security` binary override).

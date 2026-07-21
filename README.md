@@ -64,8 +64,15 @@ logs already on your machine.
   server, so nothing leaves the machine.
 - ◧ **Mini side overview** — a compact panel (`/#mini`, or the **◧ mini**
   header button) with your Claude + Codex windows as **% left** bars, true
-  reset countdowns, spend at a glance, and a 30-day trend — sized for a
-  narrow docked window or a browser "install as app" side panel.
+  reset countdowns, a **"~% left at reset"** burn-rate projection, a tabbed
+  Today / Yesterday / 30-Days spend donut with per-source breakdown, and a
+  usage trend — sized for a narrow docked window or a browser "install as
+  app" side panel.
+- 🔔 **Windows tray icon** (opt-in, `--tray` or `{"tray": true}`) — Pulse in
+  the notification area: live tooltip (today's spend + 5h/weekly %),
+  left-click opens the mini overview, right-click menu with dashboard /
+  stop. Zero dependencies — a hand-rolled PowerShell NotifyIcon fed by the
+  local statusline endpoint.
 - 📈 **Period-over-period comparison** — the spend header shows the delta vs the
   previous equal window (e.g. *▲ 18% vs prev 30 days*), so trends are obvious.
 - 🕒 **"When you work" heatmap** — a 7×24 day-by-hour grid shaded by spend, so
@@ -182,6 +189,7 @@ Re-running the installer updates and restarts the service.
 | `--no-daemon`      | (Windows exe) stay in the console window instead of backgrounding. |
 | `--no-update-check`| Disable the GitHub version check + community-reach counters. With account meters also off, Pulse then makes zero network calls. Also: `PULSE_NO_UPDATE_CHECK=1`, or `{"updateCheck": false}` in `~/.pulse/config.json`. |
 | `--no-open`        | Don't auto-open the browser (packaged exe).                   |
+| `--tray`           | (Windows) notification-area icon with live tooltip + menu. Also `{"tray": true}` in `~/.pulse/config.json`. |
 | `--effort-setup`   | Print the optional effort-logging hooks snippet.              |
 | `--version` / `--help` | The usual.                                               |
 | `--inspect-schema` | Print the record schema observed in your logs, then exit.     |
