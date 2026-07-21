@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.24.0
+
+- **The taskbar strip is retired — Pulse now launches the real OpenUsage
+  instead.** Recreating OpenUsage's strip + popover in generated PowerShell
+  (v1.22–v1.23.2) never reached the reliability of the original app, so that
+  entire implementation is removed. In its place: an opt-in **OpenUsage
+  companion** — enable it and Pulse starts
+  [CheesyPoofs346/openusage-windows](https://github.com/CheesyPoofs346/openusage-windows)'s
+  `OpenUsageTray.exe` together with the server (skipped when it's already
+  running, so you never get doubles). Pulse only *launches* the app: it never
+  downloads, installs, updates, or kills it — install it once from its
+  GitHub releases, unzip anywhere. Config: `"openusage": true` + optional
+  `"openusagePath"` (auto-detection probes a few conventional folders);
+  dashboard: the new "OpenUsage launch" toggle in the Server panel
+  (POST `/api/openusage/enable|disable`, `?path=` persists the location).
+- The `trayStyle` config key, `?style=` on `/api/tray/enable`, and the
+  `trayStyle` statusline field are gone with the strip. The notification-area
+  **tray icon** (live 5h-% badge, mini-panel click) stays, now a plain
+  on/off toggle. Old configs with `trayStyle` are ignored harmlessly; an old
+  running strip exits on its own the next time it polls a server that no
+  longer advertises it.
+
 ## v1.23.2
 
 - **Strip: a real popover, styled like OpenUsage's.** Clicking the taskbar

@@ -70,6 +70,7 @@ the old name; git remotes redirect).
 | Mini side overview | hash route `#mini`: `MiniOverview` (web/src/mini.jsx) renders Claude/Codex meter buckets as "% left" bars (`100 - pct`, hot/warm coloring by USED pct, stale rows dimmed, `~N% left at reset` line when `projLeftAtReset` present) + `MiniDonut` (SVG stroke segments, per-source colors via `makeColorMap`) with Today\|Yesterday\|30-Days tabs (day buckets from last30.daily) + Today/Yesterday/30d stat rows + `MiniTrend` daily bars; App.jsx hashchange listener + `◧ mini` header button (`window.open` 340×760 popup); degrades to hints when meters are off/no-login/expired; Spend label follows `payload.sourceFilter`; solid surfaces only (lite-safe) |
 | Meter burn projection | `recordMeterSamples` (on each meters refresh; per-key ring buffer, 2h window, clears on pct DROP = window rolled) + `projectedLeftAtReset` (straight-line slope over ≥ `PULSE_METER_PROJ_MIN_MS` (default 10m) of samples → `projLeftAtReset` per bucket in `metersForPayload`, null without resetsAt/enough data; `Math.max(0, slope)` so a falling trend never projects a refill) |
 | Windows tray (opt-in) | `--tray` flag, config `tray: true`, or the Server-panel toggle (POST `/api/tray/enable\|disable`, allowMutation; enable spawns immediately, disable flips `trayEnabled` in the statusline feed and the tray self-exits ≤30s) → `startTray(port)` (win32 + loopback; `PULSE_NO_TRAY_SPAWN` test hook): writes `trayScript(port)` to `~/.pulse/tray.ps1`, spawns detached hidden powershell w/ `child.on('error')` (NotifyIcon; named mutex `PulseTray<port>`; **live badge** — 5h used-% painted on the icon via GetHicon + P/Invoke DestroyIcon per repaint, green/amber≥60/red≥85/`!`≥100, base app icon when meters off; tooltip today $ + 5h/wk %; left-click + menu open `#mini` as an Edge `--app` window 380×800 w/ browser fallback; first paint immediate; self-exits after 6 failed polls or Stop). `payload.tray = {supported, enabled}` gates the UI toggle |
+| OpenUsage companion (opt-in) | `findOpenUsage` (config `openusagePath` else candidate probe), `openusageRunning` (`tasklist` IMAGENAME filter — Windows builtin, still zero-dep), `launchOpenUsage` (win32 only; skips if already running; detached spawn w/ `cwd` = exe dir + `child.on('error')`; `PULSE_NO_OPENUSAGE_SPAWN` test hook); startup call beside `startTray` when config `openusage === true`; POST `/api/openusage/enable\|disable` (allowMutation, `?path=` persists `openusagePath`, disable never kills the app); `payload.openusage = {supported, enabled, path}` gates the Server-panel "OpenUsage launch" toggle |
 | Memory footprint | `intern()` pool (capped 50k) for model/source/speed/serviceTier/sessionId/project in `normalize` + `agentEntry` (JSON.parse allocates fresh strings per occurrence); entries no longer retain messageId/requestId (folded into `key` at parse); `summaryMemo` (`SUMMARY_MEMO_MS` 2.5s, unfiltered builds only, busted by `writeConfig`); `payload.memory` = `{rss, heapUsed}` → Server-panel "memory" fact. Measured 205→128 MB on a 50k-entry fixture |
 
 ## Config (`~/.pulse/config.json`) and env overrides
@@ -85,20 +86,17 @@ unless `false`), `alerts` (limit alerts; on unless `false`), `alertThresholds`
 opt-in, `=== true` only) + `anomalyMultiplier` (trigger ratio; default 3, floor
 1.5), `budget` (USD spend target; unset =
 off) + `budgetPeriod` (`month`|`week`, default month; set via `/api/budget/set`),
-`tray` (Windows notification-area icon; also `--tray`) + `trayStyle`
-(`icon` default \| `strip` — a floating pill in the taskbar band using the
-openusage-windows StripForm recipe (the two traps, learned the hard way: NO
-SetParent into `Shell_TrayWnd` — Win11's XAML taskbar paints over legacy
-child HWNDs; NO WinForms `TopMost=$true` reasserts — they ACTIVATE the form
-and the focus churn makes the pill vanish); `trayStripScript`: post-Show
-`SetWindowLong(GWL_EXSTYLE)` adds `WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|
-WS_EX_TOPMOST` so it can never take focus, `Keep-OnTop` = raw
-`SetWindowPos(HWND_TOPMOST, 0x13)` every 2s, NO fullscreen-hide heuristics
-(exclusive fullscreen covers it naturally), SetProcessDPIAware + dpi scale
-`$k` for all pixel sizes, relaunch-unless-`wantExit` resilience, drag
-persists `{mode:'float', x, y}` to `~/.pulse/tray-strip.json`;
-style switches hand off via statusline `trayStyle` mismatch → relaunch; enable
-route accepts `?style=`), `updateCheck`.
+`tray` (Windows notification-area icon; also `--tray`), `openusage`
+(`=== true` opt-in — launch CheesyPoofs346/openusage-windows's
+`OpenUsageTray.exe` alongside the server; Pulse only STARTS it, never
+installs/updates/kills it) + `openusagePath` (portable-app exe path;
+unset → `findOpenUsage` probes `%LOCALAPPDATA%\Programs\OpenUsage` +
+Desktop/OneDrive-Desktop/Downloads `OpenUsage\` folders; an explicit path
+that is missing does NOT fall back), `updateCheck`. The v1.22–v1.23.x
+`trayStyle`/strip implementation (our own PS-generated taskbar pill) was
+REMOVED in v1.24.0 in favor of the OpenUsage companion — old `trayStyle`
+config keys are ignored; hard-won strip lore lives in the v1.23.x
+CHANGELOG entries if it's ever needed again.
 
 Test/dev env hooks: `PULSE_HOME`, `CLAUDE_DIR`/`CLAUDE_CONFIG_DIR`,
 `CODEX_DIR`/`CODEX_HOME`, `GEMINI_DIR`/`GEMINI_CLI_HOME`,
@@ -108,6 +106,7 @@ Test/dev env hooks: `PULSE_HOME`, `CLAUDE_DIR`/`CLAUDE_CONFIG_DIR`,
 `PULSE_DISCORD_IPC`, `PULSE_DISCORD_TICK_MS`, `PULSE_DISCORD_ROTATE_MS`,
 `PULSE_DISCORD_CLIENT_ID`, `PULSE_MODES_FILE`, `PULSE_FAKE_DARWIN`,
 `PULSE_METER_PROJ_MIN_MS`, `PULSE_SUMMARY_MEMO_MS` (0 disables the memo — timing-sensitive suites),
+`PULSE_NO_OPENUSAGE_SPAWN` (suppress the OpenUsage companion launch),
 `PULSE_UPDATE_API` (update-check endpoint override), `PULSE_NO_UPDATE_CHECK`
 (env form of `--no-update-check`), `PULSE_UPDATE_NO_RELAUNCH` (test hook),
 `PULSE_SECURITY_BIN` (macOS Keychain `security` binary override).

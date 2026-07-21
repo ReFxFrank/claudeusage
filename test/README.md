@@ -32,7 +32,7 @@ bash test/discord.test.sh     # one suite
 | `comparison.test.sh` | Period-over-period: each period's `prev` = previous equal-length window totals (rolling N-day + calendar month), zero when no prior data |
 | `export.test.sh` | CSV/JSON export: daily/per-source columns + UTF-8 BOM, exact per-model costs, RFC-4180 quoting, `?sources=` scoping, attachment headers, 400/404 paths, foreign-Host 403 |
 | `projection.test.sh` | Meter burn projection (`projLeftAtReset` from rising utilization, slow-burn band assertion pins slope units, clamped ≥0, null without resets_at), summary memo (same build ≤2.5s, config write busts), `payload.memory` rss/heap |
-| `tray.test.sh` | Tray toggle plumbing (cross-platform): `payload.tray` state, POST enable/disable persists config, `?style=strip` switch + statusline `trayStyle`/`trayEnabled` handoff signals, GET refused (spawn suppressed via `PULSE_NO_TRAY_SPAWN`) |
+| `tray.test.sh` | Tray + OpenUsage-companion toggle plumbing (cross-platform): `payload.tray`/`payload.openusage` state, POST enable/disable persists config, statusline `trayEnabled` handoff signal, config-file `openusagePath` resolution, GET refused on both endpoints (spawns suppressed via `PULSE_NO_TRAY_SPAWN`/`PULSE_NO_OPENUSAGE_SPAWN`) |
 
 Conventions when adding tests: fixture homes via `mktemp -d` + `CLAUDE_DIR` /
 `CODEX_DIR` / `PULSE_HOME` env; per-suite fixed port; fake tokens only, with

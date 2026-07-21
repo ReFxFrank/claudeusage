@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.23.2';
+const PULSE_VERSION = '1.24.0';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -124,10 +124,11 @@ function writeConfig(patch) {
     console.warn('[pulse] could not write config: ' + e.message);
   }
   // Config affects the summary payload (budget, meters, alerts, …) and the
-  // statusline feed (trayEnabled/trayStyle drive the tray's handoff) — a
+  // statusline feed (trayEnabled drives the tray's handoff) — a
   // memoized copy must never outlive a settings change.
   summaryMemo = { at: 0, payload: null };
   statuslineMemo = { at: 0, data: null };
+  openusageMemo = { at: 0, key: null, path: null };
   return next;
 }
 
@@ -2330,7 +2331,8 @@ function buildSummary(sourceFilter, opts) {
   payload.discord = discordForPayload();
   // Windows tray state — the Server panel shows the toggle only where the
   // feature exists.
-  payload.tray = { supported: process.platform === 'win32', enabled: trayDesired !== null ? trayDesired : readConfig().tray === true, style: trayStyle() };
+  payload.tray = { supported: process.platform === 'win32', enabled: trayDesired !== null ? trayDesired : readConfig().tray === true };
+  payload.openusage = { supported: process.platform === 'win32', enabled: readConfig().openusage === true, path: findOpenUsage() };
   // Server-panel visibility into the process footprint (RSS + JS heap).
   try {
     const mu = process.memoryUsage();
@@ -3693,12 +3695,10 @@ function statuslineData() {
     meters: statuslineMeterPcts(s),
     // The tray polls this feed; when the toggle turns the tray off it sees
     // trayEnabled:false here and exits itself. trayDesired covers a
-    // flag-started tray with no config key. trayStyle drives the icon↔strip
-    // handoff (a mismatch relaunches the tray from the rewritten script).
+    // flag-started tray with no config key.
     trayEnabled: trayDesired !== null ? trayDesired : readConfig().tray === true,
-    trayStyle: trayStyle(),
     version: PULSE_VERSION,
-  } : { today: null, trayEnabled: trayDesired !== null ? trayDesired : readConfig().tray === true, trayStyle: trayStyle(), version: PULSE_VERSION };
+  } : { today: null, trayEnabled: trayDesired !== null ? trayDesired : readConfig().tray === true, version: PULSE_VERSION };
   statuslineMemo = { at: now, data: d };
   return d;
 }
@@ -3959,7 +3959,6 @@ function trayScript(port) {
     // the old one has released the mutex.
     'if (-not $mtx.WaitOne(10000)) { exit }',
     "$myVer = '" + PULSE_VERSION + "'",
-    "$myStyle = 'icon'",
     'Add-Type -AssemblyName System.Windows.Forms',
     'Add-Type -AssemblyName System.Drawing',
     // GetHicon handles must be destroyed or every badge repaint leaks a GDI
@@ -4021,9 +4020,9 @@ function trayScript(port) {
     "    $s = Invoke-RestMethod -Uri ($base + '/api/statusline') -TimeoutSec 3",
     // The dashboard toggle turns the tray off by flipping this field.
     '    if ($s.trayEnabled -eq $false) { $ni.Visible = $false; [System.Windows.Forms.Application]::Exit(); return }',
-    // Server updated OR the tray style changed under us: the server rewrote
-    // tray.ps1, so relaunch from the fresh file and hand over the mutex.
-    '    if (($s.version -and $s.version -ne $myVer) -or ($s.trayStyle -and $s.trayStyle -ne $myStyle)) {',
+    // Server updated under us: the server rewrote tray.ps1, so relaunch
+    // from the fresh file and hand over the mutex.
+    '    if ($s.version -and $s.version -ne $myVer) {',
     "      Start-Process 'powershell.exe' -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $PSCommandPath",
     '      $ni.Visible = $false; [System.Windows.Forms.Application]::Exit(); return',
     '    }',
@@ -4056,664 +4055,6 @@ function trayScript(port) {
     '$ni.Visible = $false',
   ].join('\r\n') + '\r\n';
 }
-// 'icon' = a notification-area NotifyIcon with a % badge; 'strip' = an
-// always-on-top mini readout drawn over the taskbar itself (glyph + rotating
-// pages, draggable, click opens the mini panel) — the openusage-windows look.
-function trayStyle() {
-  return readConfig().trayStyle === 'strip' ? 'strip' : 'icon';
-}
-// The taskbar STRIP v9 — openusage-windows' StripForm + popover recreated:
-// v9 popover styling matches OpenUsage's card layout: each section (Total
-// Spend / Claude / Codex) sits in its own rounded card on a darker panel,
-// the spend tabs are pill buttons on their own row, per-provider Last 7 Days
-// rows, and a "Usage Trend" caption above each bar chart.
-// TRANSPARENT background (TransparencyKey on a near-black key — text
-// antialiases toward the dark taskbar) with per-provider cells drawn straight
-// onto the taskbar (provider-colored dot + stacked "% left" lines, flipping
-// to today's spend every 9s), growing leftward from a persisted right-edge
-// anchor. CLICK opens a NATIVE POPOVER anchored above the strip (their
-// WebView2 popover, rebuilt in WinForms): every official meter as a colored
-// bar with "% left" + reset countdown, spend rows, an open-dashboard link —
-// instant, rounded, dismissed by clicking away or Escape. The stability
-// recipe is untouched: WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE on the strip (never
-// takes focus), Keep-OnTop = raw SetWindowPos(HWND_TOPMOST, NOACTIVATE)
-// every 2s, no fullscreen heuristics, relaunch-unless-wantExit, mutex +
-// version/style handoff via the statusline feed.
-function trayStripScript(port) {
-  return [
-    "$mtx = New-Object System.Threading.Mutex($false, 'PulseTray" + port + "')",
-    'if (-not $mtx.WaitOne(10000)) { exit }',
-    "$myVer = '" + PULSE_VERSION + "'",
-    "$myStyle = 'strip'",
-    'Add-Type -AssemblyName System.Windows.Forms',
-    'Add-Type -AssemblyName System.Drawing',
-    "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public struct PRECT{public int L,T,R,B;}public class PulseWin{[DllImport(\"user32.dll\")]public static extern bool GetWindowRect(IntPtr h,out PRECT r);[DllImport(\"user32.dll\")]public static extern bool SetProcessDPIAware();[DllImport(\"user32.dll\")]public static extern int GetWindowLong(IntPtr h,int i);[DllImport(\"user32.dll\")]public static extern int SetWindowLong(IntPtr h,int i,int v);[DllImport(\"user32.dll\")]public static extern bool SetWindowPos(IntPtr h,IntPtr a,int x,int y,int cx,int cy,uint f);}'",
-    '[void][PulseWin]::SetProcessDPIAware()',
-    '$k = 1.0',
-    'try { $g = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero); $k = $g.DpiX / 96.0; $g.Dispose() } catch {}',
-    "$base = 'http://127.0.0.1:" + port + "'",
-    "$posFile = Join-Path (Split-Path -Parent $PSCommandPath) 'tray-strip.json'",
-    '$scr = [System.Windows.Forms.Screen]::PrimaryScreen',
-    '$H = [int](36 * $k)',
-    // The strip grows leftward from this x (kept near the tray) — openusage's
-    // _anchorRight. Legacy saves stored the LEFT x; convert on read.
-    '$script:anchorRight = $scr.Bounds.Right - [int](340 * $k)',
-    '$stripY = 0',
-    '$tbH = $scr.Bounds.Height - $scr.WorkingArea.Height',
-    'if ($tbH -ge [int](24 * $k) -and $tbH -le [int](96 * $k)) { $stripY = $scr.Bounds.Bottom - $tbH + [int](($tbH - $H) / 2) }',
-    'else { $stripY = $scr.WorkingArea.Bottom - $H - [int](8 * $k) }',
-    'if (Test-Path $posFile) { try {',
-    '  $saved = Get-Content -Raw $posFile -ErrorAction Stop | ConvertFrom-Json',
-    '  if ($saved.right -ge 80) { $script:anchorRight = [int]$saved.right }',
-    '  elseif ($saved.x -ge 0) { $script:anchorRight = [int]$saved.x + [int](190 * $k) }',
-    '  if ($saved.y -ge 0 -and $saved.y -lt $scr.Bounds.Height) { $stripY = [int]$saved.y }',
-    '} catch {} }',
-    '$script:anchorRight = [Math]::Max([int](120 * $k), [Math]::Min($script:anchorRight, $scr.Bounds.Right))',
-    '$form = New-Object System.Windows.Forms.Form',
-    "$form.FormBorderStyle = 'None'",
-    '$form.ShowInTaskbar = $false',
-    "$form.StartPosition = 'Manual'",
-    '$form.Size = New-Object System.Drawing.Size -ArgumentList ([int](80 * $k)), $H',
-    // Transparent background: everything painted in the key color vanishes,
-    // leaving only the dots and text on the taskbar (openusage look). The key
-    // is near-black so antialiased text edges blend into the dark taskbar.
-    "$key = [System.Drawing.ColorTranslator]::FromHtml('#010203')",
-    '$form.BackColor = $key',
-    '$form.TransparencyKey = $key',
-    '$form.Location = New-Object System.Drawing.Point -ArgumentList ($script:anchorRight - $form.Width), $stripY',
-    "$fTop = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 7.5, ([System.Drawing.FontStyle]::Bold)",
-    "$fBot = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 7.5",
-    "$fBig = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 9.5, ([System.Drawing.FontStyle]::Bold)",
-    "$fDot = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 11, ([System.Drawing.FontStyle]::Bold)",
-    '$script:data = $null',
-    "$script:view = 'usage'",
-    '$script:fails = 0',
-    '$script:wantExit = $false',
-    // ---- v4 stability recipe (do not touch) ----
-    'function Keep-OnTop {',
-    '  if ($form.IsHandleCreated) { [void][PulseWin]::SetWindowPos($form.Handle, [IntPtr]::new(-1), 0, 0, 0, 0, 0x13) }',
-    '}',
-    'function Open-PulseMini {',
-    '  $wr = New-Object PRECT',
-    '  [void][PulseWin]::GetWindowRect($form.Handle, [ref]$wr)',
-    '  $px = [Math]::Max(0, $wr.L - [int](100 * $k))',
-    '  $py = [Math]::Max(0, $wr.T - [int](780 * $k))',
-    "  try { Start-Process 'msedge' -ArgumentList ('--app=' + $base + '/#mini'), ('--window-size=' + [int](380 * $k) + ',' + [int](760 * $k)), ('--window-position=' + $px + ',' + $py) -ErrorAction Stop }",
-    '  catch { Start-Process ($base + \'/#mini\') }',
-    '}',
-    // ---- the popover: a native panel anchored above the strip ----
-    '$pop = New-Object System.Windows.Forms.Form',
-    "$pop.FormBorderStyle = 'None'",
-    '$pop.ShowInTaskbar = $false',
-    "$pop.StartPosition = 'Manual'",
-    '$pop.TopMost = $true',
-    "$pop.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#141318')",
-    "$CARDBG = '#1e1d26'",
-    "$script:curBg = '#141318'",
-    '$pop.KeyPreview = $true',
-    '$pop.add_Deactivate({ $pop.Hide() })',
-    '$pop.add_KeyDown({ if ($_.KeyCode -eq [System.Windows.Forms.Keys]::Escape) { $pop.Hide() } })',
-    "$fPR = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 9",
-    "$fPS = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 7.5",
-    'function Add-PopLabel([string]$text, $font, [string]$hex, [int]$x, [int]$y, [int]$w, [int]$h, [string]$align) {',
-    '  $l = New-Object System.Windows.Forms.Label',
-    '  $l.Text = $text; $l.Font = $font',
-    '  $l.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($hex)',
-    '  $l.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:curBg); $l.AutoSize = $false',
-    '  $l.Location = New-Object System.Drawing.Point -ArgumentList $x, $y',
-    '  $l.Size = New-Object System.Drawing.Size -ArgumentList $w, $h',
-    '  $l.TextAlign = $align',
-    '  [void]$pop.Controls.Add($l)',
-    '  return $l',
-    '}',
-    'function Fmt-Rem([double]$ms) {',
-    '  $t = [TimeSpan]::FromMilliseconds($ms)',
-    "  if ($t.TotalHours -ge 48) { return ([string][int][Math]::Floor($t.TotalDays)) + 'd ' + $t.Hours + 'h' }",
-    "  if ($t.TotalHours -ge 1) { return ([string][int][Math]::Floor($t.TotalHours)) + 'h ' + $t.Minutes + 'm' }",
-    "  return ([string]$t.Minutes) + 'm'",
-    '}',
-    'function Fmt-Money([double]$v) {',
-    "  return $v.ToString('#,##0.00', [System.Globalization.CultureInfo]::InvariantCulture)",
-    '}',
-    'function Fmt-Tok([double]$n) {',
-    '  $inv = [System.Globalization.CultureInfo]::InvariantCulture',
-    "  if ($n -ge 1e9) { return ($n / 1e9).ToString('0.0', $inv) + 'B' }",
-    "  if ($n -ge 1e6) { return ($n / 1e6).ToString('0.0', $inv) + 'M' }",
-    "  if ($n -ge 1e3) { return ($n / 1e3).ToString('0.0', $inv) + 'K' }",
-    '  return [string][long]$n',
-    '}',
-    // UTF-8-safe fetch: PS 5.1 decodes JSON as Latin-1 when the server omits
-    // charset (the "Codex Â· weekly" mojibake) — WebClient with forced UTF8
-    // decodes correctly against any server version.
-    // WebRequest, not WebClient: DownloadString has NO settable timeout (100s
-    // default) and it runs synchronously on the UI thread — a wedged server
-    // would freeze the whole strip. 5s cap + forced-UTF-8 stream decode.
-    'function Get-SummaryJson {',
-    '  try {',
-    "    $req = [System.Net.WebRequest]::Create($base + '/api/summary')",
-    '    $req.Timeout = 5000',
-    '    $req.ReadWriteTimeout = 5000',
-    '    $resp = $req.GetResponse()',
-    '    $sr = New-Object System.IO.StreamReader -ArgumentList $resp.GetResponseStream(), ([System.Text.Encoding]::UTF8)',
-    '    $raw = $sr.ReadToEnd()',
-    '    $sr.Dispose(); $resp.Close()',
-    '    return ($raw | ConvertFrom-Json)',
-    '  } catch { return $null }',
-    '}',
-    "$script:spendTab = '30d'",
-    "$SRCC = @{ 'cli' = '#4a9bf5'; 'claude-desktop' = '#9b8cff'; 'codex' = '#e0a132'; 'gemini' = '#22b892'; 'cline' = '#f27878'; 'roo' = '#e77c46'; 'continue' = '#b3a5ff' }",
-    "$AGENTS = @('codex', 'gemini', 'cline', 'continue', 'roo')",
-    'function Add-DonutPanel([int]$x, [int]$y, [int]$size, $slices, [string]$center) {',
-    '  $p = New-Object System.Windows.Forms.Panel',
-    '  $p.Location = New-Object System.Drawing.Point -ArgumentList $x, $y',
-    '  $p.Size = New-Object System.Drawing.Size -ArgumentList $size, $size',
-    '  $p.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:curBg)',
-    '  $p.Tag = @{ slices = $slices; center = $center }',
-    '  $p.add_Paint({',
-    '    $g2 = $_.Graphics',
-    "    $g2.SmoothingMode = 'AntiAlias'",
-    '    $t = $this.Tag',
-    '    $sz = $this.Width',
-    '    $ring = [int]($sz * 0.15)',
-    '    $a = -90.0',
-    '    foreach ($sl in $t.slices) {',
-    '      $sweep = [float](360.0 * $sl.frac)',
-    '      if ($sweep -le 0.5) { continue }',
-    '      $pen = New-Object System.Drawing.Pen -ArgumentList ([System.Drawing.ColorTranslator]::FromHtml($sl.hex)), $ring',
-    '      $g2.DrawArc($pen, [int]($ring / 2) + 1, [int]($ring / 2) + 1, $sz - $ring - 2, $sz - $ring - 2, [float]$a, $sweep)',
-    '      $pen.Dispose()',
-    '      $a += $sweep',
-    '    }',
-    '    $sf2 = New-Object System.Drawing.StringFormat',
-    "    $sf2.Alignment = 'Center'; $sf2.LineAlignment = 'Center'",
-    "    $fC = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 9.5, ([System.Drawing.FontStyle]::Bold)",
-    '    $rectF = New-Object System.Drawing.RectangleF -ArgumentList 0, 0, $sz, $sz',
-    '    $g2.DrawString($t.center, $fC, [System.Drawing.Brushes]::White, $rectF, $sf2)',
-    '    $fC.Dispose()',
-    '  })',
-    '  [void]$pop.Controls.Add($p)',
-    '}',
-    'function Add-TrendPanel([int]$x, [int]$y, [int]$w, [int]$h, $vals) {',
-    '  $p = New-Object System.Windows.Forms.Panel',
-    '  $p.Location = New-Object System.Drawing.Point -ArgumentList $x, $y',
-    '  $p.Size = New-Object System.Drawing.Size -ArgumentList $w, $h',
-    '  $p.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:curBg)',
-    '  $p.Tag = @{ vals = $vals }',
-    '  $p.add_Paint({',
-    '    $g2 = $_.Graphics',
-    '    $v = $this.Tag.vals',
-    '    if (-not $v -or $v.Count -eq 0) { return }',
-    '    $mx = 0.0; foreach ($q in $v) { if ($q -gt $mx) { $mx = $q } }',
-    '    if ($mx -le 0) { $mx = 1 }',
-    // Floor, not [int] (banker's rounding): 290/30 rounds UP to 10, pushing
-    // the last bar (= today) to exactly panel width — clipped at 100% DPI.
-    '    $bw = [Math]::Max(2, [int][Math]::Floor($this.Width / $v.Count) - 1)',
-    "    $br = New-Object System.Drawing.SolidBrush -ArgumentList ([System.Drawing.ColorTranslator]::FromHtml('#5b8bd9'))",
-    '    for ($i = 0; $i -lt $v.Count; $i++) {',
-    '      $bh = [Math]::Max(1, [int]($this.Height * $v[$i] / $mx))',
-    '      $g2.FillRectangle($br, $i * ($bw + 1), $this.Height - $bh, $bw, $bh)',
-    '    }',
-    '    $br.Dispose()',
-    '  })',
-    '  [void]$pop.Controls.Add($p)',
-    '}',
-    // One meter row, OpenUsage layout: name + "~N% left at reset" | bar |
-    // "N% left" + "Resets in X".
-    'function Add-MeterRow([int]$y, [string]$name, $b) {',
-    '  $PW = $pop.Width',
-    '  $left = [Math]::Max(0, [Math]::Round(100 - [double]$b.pct))',
-    "  [void](Add-PopLabel $name $fPR '#e8e6f2' ([int](20 * $k)) $y ([int](150 * $k)) ([int](17 * $k)) 'MiddleLeft')",
-    '  if ($b.projLeftAtReset -ne $null) {',
-    "    [void](Add-PopLabel ('~' + $b.projLeftAtReset + '% left at reset') $fPS '#78748f' ($PW - [int](140 * $k)) $y ([int](120 * $k)) ([int](17 * $k)) 'MiddleRight')",
-    '  }',
-    '  $y += [int](19 * $k)',
-    '  $track = New-Object System.Windows.Forms.Panel',
-    '  $track.Location = New-Object System.Drawing.Point -ArgumentList ([int](20 * $k)), $y',
-    '  $track.Size = New-Object System.Drawing.Size -ArgumentList ($PW - [int](40 * $k)), ([int](5 * $k))',
-    "  $track.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#2a2938')",
-    '  $fill = New-Object System.Windows.Forms.Panel',
-    '  $fill.Location = New-Object System.Drawing.Point -ArgumentList 0, 0',
-    '  $usedW = [int]($track.Width * [Math]::Min(100, [Math]::Max(0, [double]$b.pct)) / 100)',
-    '  $fill.Size = New-Object System.Drawing.Size -ArgumentList ([Math]::Max([int](2 * $k), $usedW)), $track.Height',
-    "  $hex = if ($b.pct -ge 85) { '#f27878' } elseif ($b.pct -ge 60) { '#e0a132' } else { '#22b892' }",
-    '  $fill.BackColor = [System.Drawing.ColorTranslator]::FromHtml($hex)',
-    '  [void]$track.Controls.Add($fill)',
-    '  [void]$pop.Controls.Add($track)',
-    '  $y += [int](8 * $k)',
-    "  [void](Add-PopLabel (([string]$left) + '% left') $fPS '#b9b6cc' ([int](20 * $k)) $y ([int](100 * $k)) ([int](14 * $k)) 'MiddleLeft')",
-    '  if ($b.resetsAt) {',
-    '    $rem = [double]$b.resetsAt - [DateTimeOffset]::Now.ToUnixTimeMilliseconds()',
-    '    if ($rem -gt 0) {',
-    "      [void](Add-PopLabel ('Resets in ' + (Fmt-Rem $rem)) $fPS '#78748f' ($PW - [int](140 * $k)) $y ([int](120 * $k)) ([int](14 * $k)) 'MiddleRight')",
-    '    }',
-    '  }',
-    '  return ($y + [int](20 * $k))',
-    '}',
-    'function Add-SpendRow([int]$y, [string]$name, [string]$val) {',
-    '  $PW = $pop.Width',
-    "  [void](Add-PopLabel $name $fPR '#e8e6f2' ([int](20 * $k)) $y ([int](110 * $k)) ([int](17 * $k)) 'MiddleLeft')",
-    "  [void](Add-PopLabel $val $fPR '#b9b6cc' ([int](120 * $k)) $y ($PW - [int](140 * $k)) ([int](17 * $k)) 'MiddleRight')",
-    '  return ($y + [int](19 * $k))',
-    '}',
-    'function Add-SectionHeader([int]$y, [string]$name, [string]$dotHex) {',
-    "  [void](Add-PopLabel ([string][char]0x25CF) $fPS $dotHex ([int](14 * $k)) $y ([int](12 * $k)) ([int](16 * $k)) 'MiddleLeft')",
-    "  $hl = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 9.5, ([System.Drawing.FontStyle]::Bold)",
-    "  [void](Add-PopLabel $name $hl '#f2f1f8' ([int](28 * $k)) $y ([int](150 * $k)) ([int](17 * $k)) 'MiddleLeft')",
-    '  return ($y + [int](22 * $k))',
-    '}',
-    // Rounded card painted BEHIND already-added content (WinForms z-order:
-    // first-added is topmost, so content labels stay on top).
-    'function Add-Card([int]$top, [int]$bottom) {',
-    '  $cp = New-Object System.Windows.Forms.Panel',
-    '  $cp.Location = New-Object System.Drawing.Point -ArgumentList ([int](8 * $k)), $top',
-    '  $cp.Size = New-Object System.Drawing.Size -ArgumentList ($pop.Width - [int](16 * $k)), ($bottom - $top)',
-    '  $cp.BackColor = [System.Drawing.ColorTranslator]::FromHtml($CARDBG)',
-    '  $gpc = New-Object System.Drawing.Drawing2D.GraphicsPath',
-    '  $rc = [int](8 * $k)',
-    '  $cw = $cp.Width; $ch = $cp.Height',
-    '  $gpc.AddArc(0, 0, $rc * 2, $rc * 2, 180, 90)',
-    '  $gpc.AddArc($cw - $rc * 2, 0, $rc * 2, $rc * 2, 270, 90)',
-    '  $gpc.AddArc($cw - $rc * 2, $ch - $rc * 2, $rc * 2, $rc * 2, 0, 90)',
-    '  $gpc.AddArc(0, $ch - $rc * 2, $rc * 2, $rc * 2, 90, 90)',
-    '  $gpc.CloseFigure()',
-    '  $cp.Region = New-Object System.Drawing.Region -ArgumentList $gpc',
-    '  [void]$pop.Controls.Add($cp)',
-    '}',
-    'function Build-Popover {',
-    '  foreach ($c in @($pop.Controls)) { $pop.Controls.Remove($c); $c.Dispose() }',
-    '  $PW = [int](330 * $k)',
-    '  $pop.Width = $PW',
-    "  $script:curBg = '#141318'",
-    '  $y = [int](10 * $k)',
-    '  $s = Get-SummaryJson',
-    '  if ($s -eq $null) {',
-    "    [void](Add-PopLabel 'Pulse server not responding' $fPR '#f27878' ([int](14 * $k)) $y ($PW - [int](28 * $k)) ([int](20 * $k)) 'MiddleLeft')",
-    '    $y += [int](26 * $k)',
-    '  } else {',
-    // -- data prep: last30 period, today-by-source, 30d-by-source, trends --
-    "    $todayStr = (Get-Date).ToString('yyyy-MM-dd')",
-    '    $p30 = $null; foreach ($pp in @($s.periods)) { if ($pp.key -eq \'last30\') { $p30 = $pp } }',
-    '    $todaySrc = @{}',
-    '    $trendC = New-Object System.Collections.ArrayList',
-    '    $trendX = New-Object System.Collections.ArrayList',
-    '    if ($p30) { foreach ($db in @($p30.daily)) {',
-    '      $dc = 0.0; $dx = 0.0',
-    '      foreach ($pr in $db.bySource.PSObject.Properties) {',
-    "        if ($pr.Name -eq 'codex') { $dx += [double]$pr.Value } elseif ($AGENTS -notcontains $pr.Name) { $dc += [double]$pr.Value }",
-    '        if ($db.date -eq $todayStr) { $todaySrc[$pr.Name] = [double]$pr.Value }',
-    '      }',
-    '      [void]$trendC.Add($dc); [void]$trendX.Add($dx)',
-    '    } }',
-    '    $src30 = @{}',
-    '    if ($p30) { foreach ($pr in $p30.bySource.PSObject.Properties) { $src30[$pr.Name] = $pr.Value } }',
-    '    $c30cost = 0.0; $c30tok = [long]0; $x30cost = 0.0; $x30tok = [long]0; $cTodayCost = 0.0; $xTodayCost = 0.0',
-    '    foreach ($kv in $src30.GetEnumerator()) {',
-    "      if ($kv.Key -eq 'codex') { $x30cost += [double]$kv.Value.cost; $x30tok += [long]$kv.Value.tokens }",
-    '      elseif ($AGENTS -notcontains $kv.Key) { $c30cost += [double]$kv.Value.cost; $c30tok += [long]$kv.Value.tokens }',
-    '    }',
-    '    foreach ($kv in $todaySrc.GetEnumerator()) {',
-    "      if ($kv.Key -eq 'codex') { $xTodayCost += $kv.Value } elseif ($AGENTS -notcontains $kv.Key) { $cTodayCost += $kv.Value }",
-    '    }',
-    // per-provider trailing-7-day cost = last 7 daily buckets (trend lists
-    // are exactly per-day Claude/Codex cost, oldest-first, live day last)
-    '    $c7cost = 0.0; $x7cost = 0.0',
-    '    for ($i = [Math]::Max(0, $trendC.Count - 7); $i -lt $trendC.Count; $i++) { $c7cost += [double]$trendC[$i] }',
-    '    for ($i = [Math]::Max(0, $trendX.Count - 7); $i -lt $trendX.Count; $i++) { $x7cost += [double]$trendX[$i] }',
-    // 7-Days donut uses the SAME calendar buckets as the per-provider rows —
-    // payload.week is a rolling 168h window and would disagree with them.
-    '    $dailyArr = @(); if ($p30) { $dailyArr = @($p30.daily) }',
-    '    $src7 = @{}',
-    '    for ($i = [Math]::Max(0, $dailyArr.Count - 7); $i -lt $dailyArr.Count; $i++) {',
-    '      foreach ($pr in $dailyArr[$i].bySource.PSObject.Properties) {',
-    '        if (-not $src7.ContainsKey($pr.Name)) { $src7[$pr.Name] = 0.0 }',
-    '        $src7[$pr.Name] = $src7[$pr.Name] + [double]$pr.Value',
-    '      }',
-    '    }',
-    // -- TOTAL SPEND card: bold header, pill tab row, donut + legend --
-    '    $ct = $y',
-    '    $script:curBg = $CARDBG',
-    '    $y += [int](10 * $k)',
-    "    $fTS = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', 10.5, ([System.Drawing.FontStyle]::Bold)",
-    "    [void](Add-PopLabel 'Total Spend' $fTS '#f2f1f8' ([int](20 * $k)) $y ([int](160 * $k)) ([int](20 * $k)) 'MiddleLeft')",
-    '    $y += [int](26 * $k)',
-    '    $tabDefs = @(',
-    "      @{ id = 'today'; label = 'Today' },",
-    "      @{ id = '7d'; label = '7 Days' },",
-    "      @{ id = '30d'; label = '30 Days' },",
-    "      @{ id = 'all'; label = 'All Time' }",
-    '    )',
-    '    $tx = [int](20 * $k)',
-    '    $tw = [int](67 * $k); $th = [int](22 * $k)',
-    '    foreach ($td in $tabDefs) {',
-    '      $on = ($script:spendTab -eq $td.id)',
-    "      $hexT = if ($on) { '#f2f1f8' } else { '#78748f' }",
-    "      $tl = Add-PopLabel ([string]$td.label) $fPS $hexT $tx $y $tw $th 'MiddleCenter'",
-    "      if ($on) { $tl.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#3a3947') }",
-    '      $gpt = New-Object System.Drawing.Drawing2D.GraphicsPath',
-    '      $rt = [int]($th / 2)',
-    '      $gpt.AddArc(0, 0, $rt * 2, $rt * 2, 90, 180)',
-    '      $gpt.AddArc($tw - $rt * 2, 0, $rt * 2, $rt * 2, 270, 180)',
-    '      $gpt.CloseFigure()',
-    '      $tl.Region = New-Object System.Drawing.Region -ArgumentList $gpt',
-    '      $tl.Cursor = [System.Windows.Forms.Cursors]::Hand',
-    '      $tl.Tag = $td.id',
-    '      $tl.add_Click({',
-    '        $script:spendTab = $this.Tag',
-    '        $bot = $pop.Top + $pop.Height',
-    '        Build-Popover',
-    '        $pop.Top = [Math]::Max([int](8 * $k), $bot - $pop.Height)',
-    '      })',
-    '      $tx += $tw + [int](6 * $k)',
-    '    }',
-    '    $y += $th + [int](12 * $k)',
-    '    $slices = @(); $legend = @(); $centerTxt = \'\'',
-    "    if ($script:spendTab -eq 'today') {",
-    '      $tot = 0.0; foreach ($kv in $todaySrc.GetEnumerator()) { $tot += $kv.Value }',
-    "      $centerTxt = '$' + (Fmt-Money ([double]$s.today.cost))",
-    '      foreach ($kv in ($todaySrc.GetEnumerator() | Sort-Object -Property Value -Descending)) {',
-    '        if ($kv.Value -le 0) { continue }',
-    "        $hx = if ($SRCC.ContainsKey($kv.Key)) { $SRCC[$kv.Key] } else { '#8886a0' }",
-    '        $slices += @{ frac = $kv.Value / [Math]::Max(0.01, $tot); hex = $hx }',
-    "        $legend += @{ name = $kv.Key; hex = $hx; val = ('$' + (Fmt-Money ($kv.Value))) }",
-    '      }',
-    "    } elseif ($script:spendTab -eq '7d') {",
-    '      $tot = 0.0; foreach ($kv in $src7.GetEnumerator()) { $tot += $kv.Value }',
-    "      $centerTxt = '$' + (Fmt-Money ($tot))",
-    '      foreach ($kv in ($src7.GetEnumerator() | Sort-Object -Property Value -Descending)) {',
-    '        if ($kv.Value -le 0) { continue }',
-    "        $hx = if ($SRCC.ContainsKey($kv.Key)) { $SRCC[$kv.Key] } else { '#8886a0' }",
-    '        $slices += @{ frac = $kv.Value / [Math]::Max(0.01, $tot); hex = $hx }',
-    "        $legend += @{ name = $kv.Key; hex = $hx; val = ('$' + (Fmt-Money ($kv.Value))) }",
-    '      }',
-    "    } elseif ($script:spendTab -eq 'all') {",
-    "      $centerTxt = '$' + (Fmt-Money ([double]$s.totals.cost))",
-    "      $slices = @(@{ frac = 1.0; hex = '#9b8cff' })",
-    "      $legend = @(@{ name = 'all sources'; hex = '#9b8cff'; val = ((Fmt-Tok ([double]$s.totals.tokens)) + ' tokens') })",
-    '    } else {',
-    '      $tot = 0.0; foreach ($kv in $src30.GetEnumerator()) { $tot += [double]$kv.Value.cost }',
-    "      $centerTxt = '$' + (Fmt-Money ($tot))",
-    '      foreach ($kv in ($src30.GetEnumerator() | Sort-Object -Property { [double]$_.Value.cost } -Descending)) {',
-    '        $cv = [double]$kv.Value.cost',
-    '        if ($cv -le 0) { continue }',
-    "        $hx = if ($SRCC.ContainsKey($kv.Key)) { $SRCC[$kv.Key] } else { '#8886a0' }",
-    '        $slices += @{ frac = $cv / [Math]::Max(0.01, $tot); hex = $hx }',
-    "        $legend += @{ name = $kv.Key; hex = $hx; val = ('$' + (Fmt-Money ($cv))) }",
-    '      }',
-    '    }',
-    '    $dsz = [int](86 * $k)',
-    '    Add-DonutPanel ([int](20 * $k)) $y $dsz $slices $centerTxt',
-    '    $ly = $y + [int](4 * $k)',
-    '    $shown = 0',
-    '    foreach ($lg in $legend) {',
-    '      if ($shown -ge 4) { break }',
-    "      [void](Add-PopLabel ([string][char]0x25CF) $fPS ([string]$lg.hex) ([int](118 * $k)) $ly ([int](12 * $k)) ([int](15 * $k)) 'MiddleLeft')",
-    "      [void](Add-PopLabel ([string]$lg.name) $fPS '#b9b6cc' ([int](132 * $k)) $ly ([int](88 * $k)) ([int](15 * $k)) 'MiddleLeft')",
-    "      [void](Add-PopLabel ([string]$lg.val) $fPS '#e8e6f2' ([int](224 * $k)) $ly ($PW - [int](244 * $k)) ([int](15 * $k)) 'MiddleRight')",
-    '      $ly += [int](18 * $k)',
-    '      $shown++',
-    '    }',
-    '    $y += $dsz + [int](14 * $k)',
-    '    Add-Card $ct $y',
-    '    $y += [int](14 * $k)',
-    "    $script:curBg = '#141318'",
-    // -- CLAUDE section --
-    '    $mb = @(); $cbx = @()',
-    '    if ($s.meters -and $s.meters.enabled -and $s.meters.buckets) { $mb = @($s.meters.buckets) }',
-    '    if ($s.codexMeters -and $s.codexMeters.buckets) { $cbx = @($s.codexMeters.buckets | Where-Object { -not $_.stale }) }',
-    "    $y = Add-SectionHeader $y 'Claude' '#d97757'",
-    '    $ct = $y',
-    '    $script:curBg = $CARDBG',
-    '    $y += [int](10 * $k)',
-    '    if ($mb.Count -eq 0) {',
-    // Say what is actually wrong — "retrying automatically" was a lie when
-    // the opt-in is off or there is no login (nothing retries those).
-    "      $msg = 'Official meters warming up or rate-limited - retrying automatically.'",
-    "      if (-not $s.meters -or $s.meters.enabled -ne $true) { $msg = 'Account meters are off - enable them in the Pulse dashboard.' }",
-    "      elseif ($s.meters.status -eq 'no-login') { $msg = 'No Claude Code login found - sign in and meters appear here.' }",
-    "      elseif ($s.meters.status -eq 'expired') { $msg = 'Claude token expired - open Claude Code to refresh it.' }",
-    "      [void](Add-PopLabel $msg $fPS '#78748f' ([int](20 * $k)) $y ($PW - [int](40 * $k)) ([int](15 * $k)) 'MiddleLeft')",
-    '      $y += [int](19 * $k)',
-    '    }',
-    "    if ($mb.Count -gt 0 -and $s.meters.status -and $s.meters.status -ne 'ok') {",
-    "      [void](Add-PopLabel ('showing last known values (' + $s.meters.status + ')') $fPS '#78748f' ([int](20 * $k)) $y ($PW - [int](40 * $k)) ([int](14 * $k)) 'MiddleLeft')",
-    '      $y += [int](17 * $k)',
-    '    }',
-    '    foreach ($b in $mb) {',
-    "      $nm = ([string]$b.label) -replace '^Claude\\s*.\\s*', ''",
-    '      $y = Add-MeterRow $y $nm $b',
-    '    }',
-    "    $y = Add-SpendRow $y 'Today' ('$' + (Fmt-Money ($cTodayCost)))",
-    "    $y = Add-SpendRow $y 'Last 7 Days' ('$' + (Fmt-Money ($c7cost)))",
-    "    $y = Add-SpendRow $y 'Last 30 Days' ('$' + (Fmt-Money ($c30cost)) + ' ' + [char]0x00B7 + ' ' + (Fmt-Tok ([double]$c30tok)) + ' tokens')",
-    '    $y += [int](2 * $k)',
-    "    [void](Add-PopLabel 'Usage Trend' $fPR '#e8e6f2' ([int](20 * $k)) $y ([int](110 * $k)) ([int](17 * $k)) 'MiddleLeft')",
-    "    [void](Add-PopLabel 'Last 30 days' $fPS '#78748f' ($PW - [int](140 * $k)) $y ([int](120 * $k)) ([int](17 * $k)) 'MiddleRight')",
-    '    $y += [int](21 * $k)',
-    '    Add-TrendPanel ([int](20 * $k)) $y ($PW - [int](40 * $k)) ([int](26 * $k)) $trendC',
-    '    $y += [int](36 * $k)',
-    '    Add-Card $ct $y',
-    '    $y += [int](14 * $k)',
-    "    $script:curBg = '#141318'",
-    // -- CODEX section --
-    '    if ($cbx.Count -gt 0 -or $x30cost -gt 0) {',
-    "      $y = Add-SectionHeader $y 'Codex' '#10a37f'",
-    '      $ct = $y',
-    '      $script:curBg = $CARDBG',
-    '      $y += [int](10 * $k)',
-    '      foreach ($b in $cbx) {',
-    "        $nm = ([string]$b.label) -replace '^Codex\\s*.\\s*', ''",
-    '        $y = Add-MeterRow $y $nm $b',
-    '      }',
-    "      $y = Add-SpendRow $y 'Today' ('$' + (Fmt-Money ($xTodayCost)))",
-    "      $y = Add-SpendRow $y 'Last 7 Days' ('$' + (Fmt-Money ($x7cost)))",
-    "      $y = Add-SpendRow $y 'Last 30 Days' ('$' + (Fmt-Money ($x30cost)) + ' ' + [char]0x00B7 + ' ' + (Fmt-Tok ([double]$x30tok)) + ' tokens')",
-    '      $y += [int](2 * $k)',
-    "      [void](Add-PopLabel 'Usage Trend' $fPR '#e8e6f2' ([int](20 * $k)) $y ([int](110 * $k)) ([int](17 * $k)) 'MiddleLeft')",
-    "      [void](Add-PopLabel 'Last 30 days' $fPS '#78748f' ($PW - [int](140 * $k)) $y ([int](120 * $k)) ([int](17 * $k)) 'MiddleRight')",
-    '      $y += [int](21 * $k)',
-    '      Add-TrendPanel ([int](20 * $k)) $y ($PW - [int](40 * $k)) ([int](26 * $k)) $trendX',
-    '      $y += [int](36 * $k)',
-    '      Add-Card $ct $y',
-    '      $y += [int](6 * $k)',
-    "      $script:curBg = '#141318'",
-    '    }',
-    '  }',
-    '  $y += [int](2 * $k)',
-    "  $link = Add-PopLabel ('Open dashboard ' + [char]0x2192) $fPR '#9b8cff' ([int](14 * $k)) $y ($PW - [int](28 * $k)) ([int](18 * $k)) 'MiddleLeft'",
-    '  $link.Cursor = [System.Windows.Forms.Cursors]::Hand',
-    "  $link.add_Click({ Start-Process ($base + '/'); $pop.Hide() })",
-    '  $y += [int](28 * $k)',
-    '  $pop.Height = $y',
-    '  $gp2 = New-Object System.Drawing.Drawing2D.GraphicsPath',
-    '  $r2 = [int](10 * $k)',
-    '  $gp2.AddArc(0, 0, $r2 * 2, $r2 * 2, 180, 90)',
-    '  $gp2.AddArc($PW - $r2 * 2, 0, $r2 * 2, $r2 * 2, 270, 90)',
-    '  $gp2.AddArc($PW - $r2 * 2, $y - $r2 * 2, $r2 * 2, $r2 * 2, 0, 90)',
-    '  $gp2.AddArc(0, $y - $r2 * 2, $r2 * 2, $r2 * 2, 90, 90)',
-    '  $gp2.CloseFigure()',
-    '  $pop.Region = New-Object System.Drawing.Region -ArgumentList $gp2',
-    '}',
-    'function Toggle-Popover {',
-    '  if ($pop.Visible) { $pop.Hide(); return }',
-    '  Build-Popover',
-    '  $wr = New-Object PRECT',
-    '  [void][PulseWin]::GetWindowRect($form.Handle, [ref]$wr)',
-    '  $px = [Math]::Min($scr.WorkingArea.Right - $pop.Width - [int](8 * $k), [Math]::Max([int](8 * $k), $wr.R - $pop.Width))',
-    '  $py = [Math]::Max([int](8 * $k), $wr.T - $pop.Height - [int](10 * $k))',
-    '  $pop.Location = New-Object System.Drawing.Point -ArgumentList $px, $py',
-    '  $pop.Show()',
-    '  $pop.Activate()',
-    '}',
-    // ---- drag anywhere on the strip; small move = click ----
-    '$script:dragStart = $null; $script:formStart = $null; $script:moved = $false; $script:ranOk = $false',
-    '$down = {',
-    '  if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) {',
-    '    $script:dragStart = [System.Windows.Forms.Cursor]::Position',
-    '    $script:formStart = $form.Location',
-    '    $script:moved = $false',
-    '  }',
-    '}',
-    // DPI-scaled click threshold: 4 physical px on a 4K panel is a tremor —
-    // micro-drags were swallowing clicks (popover "sometimes doesn't open").
-    '$dragThresh = [Math]::Max(6, [int](7 * $k))',
-    '$move = {',
-    '  if ($script:dragStart -ne $null -and $_.Button -eq [System.Windows.Forms.MouseButtons]::Left) {',
-    '    $cur = [System.Windows.Forms.Cursor]::Position',
-    '    $dx = $cur.X - $script:dragStart.X; $dy = $cur.Y - $script:dragStart.Y',
-    '    if ([Math]::Abs($dx) -gt $dragThresh -or [Math]::Abs($dy) -gt $dragThresh) { $script:moved = $true }',
-    '    if ($script:moved) {',
-    '      $form.Location = New-Object System.Drawing.Point -ArgumentList ($script:formStart.X + $dx), ($script:formStart.Y + $dy)',
-    '    }',
-    '  }',
-    '}',
-    '$up = {',
-    '  if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) {',
-    '    if ($script:moved) {',
-    '      $script:anchorRight = $form.Location.X + $form.Width',
-    "      try { @{ mode = 'float'; right = $script:anchorRight; y = $form.Location.Y } | ConvertTo-Json | Set-Content -Path $posFile } catch {}",
-    '    } else { Toggle-Popover }',
-    '    $script:dragStart = $null',
-    '  }',
-    '}',
-    'function Hook-Mouse($c) {',
-    '  $c.add_MouseDown($down); $c.add_MouseMove($move); $c.add_MouseUp($up)',
-    '}',
-    'Hook-Mouse $form',
-    // ---- cell builder: provider dot + stacked usage lines, or the spend view ----
-    'function New-StripLabel([string]$text, $font, [string]$hex, [int]$x, [int]$y, [int]$w, [int]$h, [string]$align) {',
-    '  $l = New-Object System.Windows.Forms.Label',
-    '  $l.Text = $text',
-    '  $l.Font = $font',
-    '  $l.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($hex)',
-    '  $l.BackColor = $form.BackColor',
-    '  $l.AutoSize = $false',
-    '  $l.Location = New-Object System.Drawing.Point -ArgumentList $x, $y',
-    '  $l.Size = New-Object System.Drawing.Size -ArgumentList $w, $h',
-    '  $l.TextAlign = $align',
-    '  Hook-Mouse $l',
-    '  [void]$form.Controls.Add($l)',
-    '  return $l',
-    '}',
-    'function Add-ProviderCell([int]$x, [string]$dotHex, [string]$line1, [string]$line2) {',
-    "  [void](New-StripLabel ([string][char]0x25CF) $fDot $dotHex $x 0 ([int](16 * $k)) $H 'MiddleCenter')",
-    '  $tx = $x + [int](16 * $k)',
-    '  $tw = [int](58 * $k)',
-    '  if ($line2) {',
-    "    [void](New-StripLabel $line1 $fTop '#f2f1f8' $tx 0 $tw ([int]($H / 2)) 'BottomLeft')",
-    "    [void](New-StripLabel $line2 $fBot '#b9b6cc' $tx ([int]($H / 2)) $tw ([int]($H / 2)) 'TopLeft')",
-    '  } else {',
-    "    [void](New-StripLabel $line1 $fTop '#f2f1f8' $tx 0 $tw $H 'MiddleLeft')",
-    '  }',
-    '  return ($x + [int](16 * $k) + $tw + [int](6 * $k))',
-    '}',
-    'function Build-Strip {',
-    // NEVER rebuild mid-drag/mid-click: timer ticks pump during mouse capture,
-    // and disposing the captured label kills the drag (MouseUp never fires,
-    // position never persists) or silently swallows the click. Skip; the next
-    // tick after MouseUp repaints.
-    '  if ($script:dragStart -ne $null) { return }',
-    '  foreach ($c in @($form.Controls)) { $form.Controls.Remove($c); $c.Dispose() }',
-    '  $d = $script:data',
-    '  $x = [int](4 * $k)',
-    '  if ($d -eq $null) {',
-    "    $x = Add-ProviderCell $x '#9b8cff' 'Pulse' $null",
-    "  } elseif ($script:view -eq 'price' -and $d.today -ne $null) {",
-    "    [void](New-StripLabel ([string][char]0x25CF) $fDot '#9b8cff' $x 0 ([int](16 * $k)) $H 'MiddleCenter')",
-    "    [void](New-StripLabel ('$' + $d.today + ' today') $fBig '#f2f1f8' ($x + [int](16 * $k)) 0 ([int](104 * $k)) $H 'MiddleLeft')",
-    '    $x = $x + [int](16 * $k) + [int](104 * $k) + [int](6 * $k)',
-    '  } else {',
-    '    $drew = $false',
-    '    if ($d.c5 -ne $null -or $d.cw -ne $null) {',
-    "      $l1 = if ($d.c5 -ne $null) { '5h ' + $d.c5 + '%' } else { 'wk ' + $d.cw + '%' }",
-    "      $l2 = if ($d.c5 -ne $null -and $d.cw -ne $null) { 'wk ' + $d.cw + '%' } else { $null }",
-    "      $x = Add-ProviderCell $x '#d97757' $l1 $l2",
-    '      $drew = $true',
-    '    }',
-    '    if ($d.xw -ne $null) {',
-    "      $x = Add-ProviderCell $x '#10a37f' ('wk ' + $d.xw + '%') $null",
-    '      $drew = $true',
-    '    }',
-    '    if (-not $drew -and $d.today -ne $null) {',
-    "      $x = Add-ProviderCell $x '#9b8cff' ('$' + $d.today) $null",
-    '      $drew = $true',
-    '    }',
-    "    if (-not $drew) { $x = Add-ProviderCell $x '#9b8cff' 'Pulse' $null }",
-    '  }',
-    '  $form.Width = $x',
-    '  $form.Left = $script:anchorRight - $form.Width',
-    '  Keep-OnTop',
-    '}',
-    // ---- data: same feed + handoff logic as always ----
-    'function Update-PulseStrip {',
-    '  try {',
-    "    $s = Invoke-RestMethod -Uri ($base + '/api/statusline') -TimeoutSec 3",
-    '    if ($s.trayEnabled -eq $false) { $script:wantExit = $true; [System.Windows.Forms.Application]::Exit(); return }',
-    '    if (($s.version -and $s.version -ne $myVer) -or ($s.trayStyle -and $s.trayStyle -ne $myStyle)) {',
-    "      Start-Process 'powershell.exe' -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $PSCommandPath",
-    '      $script:wantExit = $true; [System.Windows.Forms.Application]::Exit(); return',
-    '    }',
-    '    $d = @{ c5 = $null; cw = $null; xw = $null; today = $null }',
-    '    $m = $s.meters',
-    '    if ($m -and $m.claudeFiveHour -ne $null) { $d.c5 = 100 - [int]$m.claudeFiveHour }',
-    '    if ($m -and $m.claudeWeekly -ne $null) { $d.cw = 100 - [int]$m.claudeWeekly }',
-    '    if ($m -and $m.codexWeekly -ne $null) { $d.xw = 100 - [int]$m.codexWeekly }',
-    '    if ($s.today) { $d.today = (Fmt-Money ([double]$s.today.cost)) }',
-    '    $script:data = $d',
-    '    $script:fails = 0',
-    '    Build-Strip',
-    '  } catch {',
-    '    $script:fails = $script:fails + 1',
-    '    if ($script:fails -ge 6) { $script:wantExit = $true; [System.Windows.Forms.Application]::Exit() }',
-    '  }',
-    '}',
-    '$menu = New-Object System.Windows.Forms.ContextMenuStrip',
-    "[void]$menu.Items.Add('Open dashboard', $null, { Start-Process ($base + '/') })",
-    "[void]$menu.Items.Add('Quick view (popover)', $null, { Toggle-Popover })",
-    "[void]$menu.Items.Add('Open mini window', $null, { Open-PulseMini })",
-    "[void]$menu.Items.Add('Refresh now', $null, { Update-PulseStrip })",
-    "[void]$menu.Items.Add('-')",
-    "[void]$menu.Items.Add('Stop Pulse', $null, { try { Invoke-RestMethod -Method Post -Uri ($base + '/api/shutdown') -Headers @{ 'X-Pulse' = '1' } -TimeoutSec 3 | Out-Null } catch {}; $script:wantExit = $true; [System.Windows.Forms.Application]::Exit() })",
-    "[void]$menu.Items.Add('Exit strip', $null, { $script:wantExit = $true; [System.Windows.Forms.Application]::Exit() })",
-    '$form.ContextMenuStrip = $menu',
-    '$dataTimer = New-Object System.Windows.Forms.Timer',
-    '$dataTimer.Interval = 30000',
-    '$dataTimer.add_Tick({ Update-PulseStrip })',
-    // usage ↔ spend flip on openusage's relaxed 9s cadence
-    '$flipTimer = New-Object System.Windows.Forms.Timer',
-    '$flipTimer.Interval = 9000',
-    '$flipTimer.add_Tick({',
-    "  $script:view = if ($script:view -eq 'usage') { 'price' } else { 'usage' }",
-    '  Build-Strip',
-    '})',
-    '$visTimer = New-Object System.Windows.Forms.Timer',
-    '$visTimer.Interval = 2000',
-    '$visTimer.add_Tick({ Keep-OnTop })',
-    'Update-PulseStrip',
-    // The first poll runs BEFORE Application::Run, where Application::Exit()
-    // is a no-op — if it decided to exit (disabled / version handoff), honor
-    // that here instead of showing a ~30s zombie strip.
-    'if (-not $script:wantExit) {',
-    '  Build-Strip',
-    '  $dataTimer.Start()',
-    '  $flipTimer.Start()',
-    '  $form.Show()',
-    // WS_EX_TOOLWINDOW (0x80) | WS_EX_NOACTIVATE (0x8000000) | WS_EX_TOPMOST
-    // (0x8): no alt-tab entry, and the window can never take focus.
-    '  $ex = [PulseWin]::GetWindowLong($form.Handle, -20)',
-    '  [void][PulseWin]::SetWindowLong($form.Handle, -20, ($ex -bor 0x80 -bor 0x8000000 -bor 0x8))',
-    '  Keep-OnTop',
-    '  $visTimer.Start()',
-    // ranOk gates the relaunch: if setup failed before a working message loop
-    // existed (e.g. Constrained Language Mode blocks Add-Type/New-Object),
-    // relaunching would spin-loop spawning doomed copies forever.
-    '  if ($form -and $form.IsHandleCreated) { $script:ranOk = $true }',
-    '  [System.Windows.Forms.Application]::Run($form)',
-    '}',
-    'if ($script:ranOk -and -not $script:wantExit) {',
-    "  Start-Process 'powershell.exe' -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $PSCommandPath",
-    '}',
-  ].join('\r\n') + '\r\n';
-}
 
 
 
@@ -4734,11 +4075,10 @@ function startTray(port) {
     console.log('[pulse] tray spawn suppressed (PULSE_NO_TRAY_SPAWN — test hook)');
     return;
   }
-  const style = trayStyle();
   const scriptPath = path.join(pulseHome(), 'tray.ps1');
   try {
     fs.mkdirSync(pulseHome(), { recursive: true });
-    fs.writeFileSync(scriptPath, style === 'strip' ? trayStripScript(port) : trayScript(port));
+    fs.writeFileSync(scriptPath, trayScript(port));
   } catch (e) {
     console.warn('[pulse] tray: could not write script: ' + e.message);
     return;
@@ -4756,6 +4096,91 @@ function startTray(port) {
   } catch (e) {
     console.warn('[pulse] tray failed to start: ' + e.message);
   }
+}
+// ---- OPENUSAGE COMPANION (opt-in, Windows) -------------------------------
+// Launches CheesyPoofs346/openusage-windows (OpenUsageTray.exe — the taskbar
+// strip + popover) alongside Pulse instead of Pulse drawing its own taskbar
+// UI. Pulse only STARTS the app: it never installs, updates, or kills it,
+// and disable just stops future auto-launches. Config: `openusage: true` +
+// optional `openusagePath` (the app is portable — "unzip anywhere" — so
+// auto-detection probes a few conventional folders).
+// Memoized: payload.openusage calls this on every summary build, and the
+// configured path is arbitrary — a dead UNC path would otherwise sync-block
+// the server on each build. Busted by writeConfig alongside the other memos.
+let openusageMemo = { at: 0, key: null, path: null };
+function findOpenUsage() {
+  const c = readConfig();
+  const key = typeof c.openusagePath === 'string' ? c.openusagePath : '';
+  const now = Date.now();
+  if (openusageMemo.key === key && now - openusageMemo.at < 30000) return openusageMemo.path;
+  // statSync().isFile(), not existsSync: the natural mistake is configuring
+  // the unzipped FOLDER, which existsSync would happily accept and spawn.
+  const isFile = (p) => { try { return fs.statSync(p).isFile(); } catch { return false; } };
+  let resolved = null;
+  if (key) {
+    resolved = isFile(key) ? key : null; // an explicit path that is missing should NOT fall back
+  } else {
+    const home = os.homedir();
+    const local = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+    const candidates = [
+      path.join(local, 'Programs', 'OpenUsage', 'OpenUsageTray.exe'),
+      path.join(home, 'OneDrive', 'Desktop', 'OpenUsage', 'OpenUsageTray.exe'),
+      path.join(home, 'Desktop', 'OpenUsage', 'OpenUsageTray.exe'),
+      path.join(home, 'Downloads', 'OpenUsage', 'OpenUsageTray.exe'),
+    ];
+    for (const p of candidates) {
+      if (isFile(p)) { resolved = p; break; }
+    }
+  }
+  openusageMemo = { at: now, key, path: resolved };
+  return resolved;
+}
+function openusageRunning(exe, cb) {
+  // tasklist ships with Windows — still zero runtime dependencies.
+  const name = path.basename(exe);
+  try {
+    require('child_process').execFile('tasklist', ['/FI', 'IMAGENAME eq ' + name, '/FO', 'CSV', '/NH'],
+      { windowsHide: true }, (err, out) => {
+        cb(!err && typeof out === 'string' && out.toLowerCase().includes(name.toLowerCase()));
+      });
+  } catch {
+    cb(false);
+  }
+}
+function launchOpenUsage() {
+  if (process.platform !== 'win32') return;
+  if (process.env.PULSE_NO_OPENUSAGE_SPAWN) {
+    console.log('[pulse] openusage spawn suppressed (PULSE_NO_OPENUSAGE_SPAWN — test hook)');
+    return;
+  }
+  const exe = findOpenUsage();
+  if (!exe) {
+    console.warn('[pulse] openusage: OpenUsageTray.exe not found — set "openusagePath" in ~/.pulse/config.json (get it from github.com/CheesyPoofs346/openusage-windows/releases)');
+    return;
+  }
+  openusageRunning(exe, (running) => {
+    if (running) return; // already on the taskbar — never start a second one
+    try {
+      // OpenUsage's popover hard-codes a 100%-DPI window width (372px) while
+      // WebView2 zooms content by the monitor scale — on 125%/150% displays
+      // the popover clips. Forcing scale 1 for THIS process makes the whole
+      // window/content contract consistent (the author's intended look).
+      // Respect the var if the user already set their own.
+      const env = Object.assign({}, process.env);
+      if (!env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS) {
+        env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--force-device-scale-factor=1';
+      }
+      const child = require('child_process').spawn(exe, [],
+        { detached: true, stdio: 'ignore', cwd: path.dirname(exe), env });
+      // Same async-'error' trap as the tray: a bad/blocked exe must warn,
+      // not crash the server (and crash-loop every start via the config).
+      child.on('error', (e) => console.warn('[pulse] openusage failed to start: ' + e.message));
+      child.unref();
+      console.log('[pulse] openusage companion started (' + exe + ')');
+    } catch (e) {
+      console.warn('[pulse] openusage failed to start: ' + e.message);
+    }
+  });
 }
 
 function startServer(port, host, opts) {
@@ -4942,19 +4367,30 @@ function startServer(port, host, opts) {
       if (route === '/api/tray/enable' || route === '/api/tray/disable') {
         if (!allowMutation(req, res)) return;
         const on = route.endsWith('enable');
-        const styleQ = new URLSearchParams(parsed.query || '').get('style');
-        const patch = { tray: on };
-        if (on && (styleQ === 'strip' || styleQ === 'icon')) patch.trayStyle = styleQ;
-        writeConfig(patch);
+        writeConfig({ tray: on });
         trayDesired = on;
-        console.log('[pulse] tray ' + (on ? 'enabled (' + trayStyle() + ')' : 'disabled') + ' from the dashboard');
-        // Enable starts it right now (Windows only). Disable and style
-        // switches are picked up by the running tray's own poll: the feed
-        // carries trayEnabled + trayStyle, and a style mismatch triggers the
-        // same relaunch-from-rewritten-tray.ps1 handoff as a version change.
+        console.log('[pulse] tray ' + (on ? 'enabled' : 'disabled') + ' from the dashboard');
+        // Enable starts it right now (Windows only). Disable is picked up by
+        // the running tray's own poll: the feed carries trayEnabled.
         if (on && process.platform === 'win32' && boundLoopback) startTray(port);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, tray: { supported: process.platform === 'win32', enabled: on, style: trayStyle() } }));
+        res.end(JSON.stringify({ ok: true, tray: { supported: process.platform === 'win32', enabled: on } }));
+        return;
+      }
+      if (route === '/api/openusage/enable' || route === '/api/openusage/disable') {
+        if (!allowMutation(req, res)) return;
+        const on = route.endsWith('enable');
+        // Deliberately NO path parameter: allowMutation proves loopback, not
+        // same-user — any local account can reach 127.0.0.1, and a spawn path
+        // must not be settable by a different user. openusagePath comes only
+        // from ~/.pulse/config.json, which the OS user-gates.
+        writeConfig({ openusage: on });
+        console.log('[pulse] openusage companion ' + (on ? 'enabled' : 'disabled') + ' from the dashboard');
+        // Enable launches it right now (Windows only); disable only stops
+        // future auto-launches — Pulse never kills the user's own app.
+        if (on && process.platform === 'win32' && boundLoopback) launchOpenUsage();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, openusage: { supported: process.platform === 'win32', enabled: on, path: findOpenUsage() } }));
         return;
       }
       if (route === '/api/budget/set') {
@@ -5031,7 +4467,17 @@ function startServer(port, host, opts) {
     }
     // Windows notification-area icon (opt-in) — loopback only, self-exits
     // when the server stops.
+    // Always refresh tray.ps1 when the tray is configured, even when the
+    // spawn is skipped (non-loopback bind): a surviving pre-1.24 strip
+    // version-handoff relaunches from this file, and without the rewrite it
+    // would respawn its own old script in a loop.
+    if (process.platform === 'win32' && !process.env.PULSE_NO_TRAY_SPAWN &&
+        ((opts && opts.tray) || readConfig().tray === true)) {
+      try { fs.writeFileSync(path.join(pulseHome(), 'tray.ps1'), trayScript(port)); } catch {}
+    }
     if (opts && opts.tray && LOOPBACK_HOSTS.has(host)) startTray(port);
+    // OpenUsage companion (opt-in) — start the taskbar app alongside Pulse.
+    if (readConfig().openusage === true && LOOPBACK_HOSTS.has(host)) launchOpenUsage();
     if (LOOPBACK_HOSTS.has(host)) {
       console.log(`  open: http://localhost:${port}\n`);
     } else {
