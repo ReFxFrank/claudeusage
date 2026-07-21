@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.22.1
+
+- **Taskbar-strip polish** from a live debugging session: the first run no
+  longer emits a (harmless) missing-position-file error, and the strip
+  reasserts always-on-top on every data tick so an Explorer restart — which
+  rebuilds the taskbar above existing topmost windows — can't leave the pill
+  hidden behind it.
+
 ## v1.22.0
 
 - **Taskbar strip — the openusage-windows look.** A new tray style: instead of

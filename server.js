@@ -25,7 +25,7 @@ const url = require('url');
 const crypto = require('crypto');
 
 // Version — keep in sync with package.json (build/make-exe.mjs enforces this).
-const PULSE_VERSION = '1.22.0';
+const PULSE_VERSION = '1.22.1';
 const SERVER_START = Date.now();
 let IS_DAEMON_CHILD = false; // set when running as the hidden background child
 let IS_AFTER_UPDATE = false; // set on the relaunch right after a self-update
@@ -4090,10 +4090,10 @@ function trayStripScript(port) {
     '$x = $scr.WorkingArea.Right - $W - 260',
     '$y = $scr.Bounds.Bottom - $tbH + [int](($tbH - $H) / 2)',
     'if ($scr.Bounds.Height -eq $scr.WorkingArea.Height) { $y = $scr.WorkingArea.Bottom - $H - 8 }',
-    'try {',
-    '  $saved = Get-Content -Raw $posFile | ConvertFrom-Json',
+    'if (Test-Path $posFile) { try {',
+    '  $saved = Get-Content -Raw $posFile -ErrorAction Stop | ConvertFrom-Json',
     '  if ($saved.x -ge 0 -and $saved.x -lt ($scr.Bounds.Width - 40) -and $saved.y -ge 0 -and $saved.y -lt $scr.Bounds.Height) { $x = $saved.x; $y = $saved.y }',
-    '} catch {}',
+    '} catch {} }',
     '$form.Location = New-Object System.Drawing.Point -ArgumentList $x, $y',
     // Rounded pill silhouette so it reads as a widget, not a gray box.
     '$gp = New-Object System.Drawing.Drawing2D.GraphicsPath',
@@ -4156,6 +4156,9 @@ function trayStripScript(port) {
     "    if ($p.Count -eq 0) { $p = @('Pulse'); $c = @('#9b8cff') }",
     '    $script:pages = $p; $script:dotHex = $c',
     '    if ($script:pageIdx -ge $p.Count) { $script:pageIdx = 0 }',
+    // Reassert every tick: an Explorer restart rebuilds the taskbar ABOVE
+    // existing topmost windows — this keeps the pill from vanishing behind it.
+    '    $form.TopMost = $true',
     '    $script:fails = 0',
     '  } catch {',
     '    $script:fails = $script:fails + 1',
